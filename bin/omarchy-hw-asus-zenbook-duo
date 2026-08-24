@@ -1,0 +1,11 @@
+#!/bin/bash
+# Detect ASUS Zenbook Duo UX8406 (2024 UX8406MA / 2025 UX8406CA).
+
+if command -v omarchy-hw-match >/dev/null; then
+  omarchy-hw-match "UX8406"
+  exit
+fi
+
+grep -qi "UX8406" /sys/class/dmi/id/product_name 2>/dev/null ||
+  grep -qi "UX8406" /sys/class/dmi/id/board_name 2>/dev/null ||
+  grep -qi "Zenbook Duo" /sys/class/dmi/id/product_family 2>/dev/null

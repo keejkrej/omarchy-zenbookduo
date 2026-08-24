@@ -1,0 +1,58 @@
+#!/bin/bash
+# Install Zenbook Duo overlay into the current Omarchy user session.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")" && pwd)"
+HYPR_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+BIN_DIR="$HOME/.local/bin"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+STAMP="-- omarchy-zenbookduo"
+
+backup() {
+  local path="$1"
+  [[ -e $path || -L $path ]] || return 0
+  [[ -L $path ]] && return 0
+  cp -a "$path" "$path.bak.$(date +%s)"
+}
+
+ensure_line() {
+  local file="$1"
+  local needle="$2"
+  local block="$3"
+  mkdir -p "$(dirname "$file")"
+  [[ -f $file ]] || printf '%s\n' "-- Extra autostart processes." >"$file"
+  grep -Fq "$needle" "$file" && return 0
+  printf '\n%s\n' "$block" >>"$file"
+}
+
+if [[ -x $REPO/bin/omarchy-hw-asus-zenbook-duo ]] && ! "$REPO/bin/omarchy-hw-asus-zenbook-duo"; then
+  echo "Warning: this machine does not look like a Zenbook Duo UX8406." >&2
+fi
+
+mkdir -p "$HYPR_DIR" "$BIN_DIR" "$UNIT_DIR"
+
+backup "$HYPR_DIR/duo.lua"
+backup "$HYPR_DIR/monitors.lua"
+backup "$BIN_DIR/zenbook-duo-keyboard-watch"
+backup "$UNIT_DIR/zenbook-duo-keyboard-watch.service"
+
+ln -sfn "$REPO/config/hypr/duo.lua" "$HYPR_DIR/duo.lua"
+ln -sfn "$REPO/config/hypr/monitors.lua" "$HYPR_DIR/monitors.lua"
+ln -sfn "$REPO/bin/zenbook-duo-keyboard-watch" "$BIN_DIR/zenbook-duo-keyboard-watch"
+chmod +x "$REPO/bin/zenbook-duo-keyboard-watch" "$REPO/bin/omarchy-hw-asus-zenbook-duo"
+ln -sfn "$REPO/systemd/zenbook-duo-keyboard-watch.service" "$UNIT_DIR/zenbook-duo-keyboard-watch.service"
+
+ensure_line "$HYPR_DIR/input.lua" "$STAMP" "$STAMP
+require(\"hypr.duo\").apply_devices()"
+
+systemctl --user daemon-reload
+systemctl --user enable --now zenbook-duo-keyboard-watch.service
+
+if command -v hyprctl >/dev/null && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+  hyprctl reload >/dev/null
+  hyprctl configerrors
+fi
+
+echo "Installed Zenbook Duo overlay from $REPO"
+echo "Bottom display turns off while the keyboard is snapped on over USB."

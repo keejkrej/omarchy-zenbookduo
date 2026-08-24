@@ -1,0 +1,12 @@
+[Unit]
+Description=Turn off Zenbook Duo bottom display when the keyboard is snapped on
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/zenbook-duo-keyboard-watch
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

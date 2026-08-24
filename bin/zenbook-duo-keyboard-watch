@@ -1,0 +1,72 @@
+#!/bin/bash
+# Reload Hyprland when the Zenbook Duo keyboard is snapped on or taken off.
+# Monitor rules in hypr.duo read the USB pogo-pin state.
+
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-keyboard-watch.lock"
+USB_VENDOR="0b05"
+BOTTOM_OUTPUT="eDP-2"
+
+keyboard_attached() {
+  local device vendor product
+  for device in /sys/bus/usb/devices/*; do
+    [[ -f $device/idVendor && -f $device/idProduct ]] || continue
+    vendor=$(<"$device/idVendor")
+    product=$(<"$device/idProduct")
+    [[ $vendor == "$USB_VENDOR" ]] || continue
+    case $product in
+      1bf2 | 1b2c) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+bottom_enabled() {
+  hyprctl monitors all -j 2>/dev/null | jq -e --arg output "$BOTTOM_OUTPUT" \
+    '.[] | select(.name == $output and .disabled != true)' >/dev/null 2>&1
+}
+
+sync_state() {
+  local attached=1
+  keyboard_attached || attached=0
+
+  if (( attached )) && bottom_enabled; then
+    hyprctl reload >/dev/null 2>&1 || true
+  elif (( !attached )) && ! bottom_enabled; then
+    hyprctl reload >/dev/null 2>&1 || true
+  fi
+}
+
+watch() {
+  exec 9>"$LOCK"
+  flock -n 9 || exit 0
+
+  sync_state
+
+  while true; do
+    sleep 2
+    sync_state
+  done &
+
+  local monitor=(udevadm monitor --udev --subsystem-match=usb)
+  if command -v stdbuf >/dev/null; then
+    monitor=(stdbuf -oL "${monitor[@]}")
+  fi
+
+  while read -r line; do
+    case $line in
+      *\ add\ * | *\ remove\ *)
+        sleep 0.3
+        sync_state
+        ;;
+    esac
+  done < <("${monitor[@]}")
+}
+
+case "${1:-watch}" in
+  sync) sync_state ;;
+  watch) watch ;;
+  *)
+    echo "Usage: $(basename "$0") [sync|watch]" >&2
+    exit 1
+    ;;
+esac
