@@ -1,0 +1,17 @@
+# ASUS Zenbook Duo (UX8406) keyboard+touchpad combo.
+# USB pogo-pin and Bluetooth both expose this as an external device, so
+# libinput skips laptop palm detection unless the pair is marked as a TPK
+# combo with the touchpad below the keys.
+
+[ASUS Zenbook Duo Keyboard]
+MatchUdevType=keyboard
+MatchVendor=0x0B05
+MatchName=*ASUS Zenbook Duo Keyboard
+AttrKeyboardIntegration=internal
+
+[ASUS Zenbook Duo Keyboard Touchpad]
+MatchUdevType=touchpad
+MatchVendor=0x0B05
+MatchName=*ASUS Zenbook Duo Keyboard Touchpad
+AttrTPKComboLayout=below
+AttrKeyboardIntegration=internal

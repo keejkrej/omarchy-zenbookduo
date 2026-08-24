@@ -34,6 +34,18 @@ if [[ -f $HYPR_DIR/autostart.lua ]]; then
   sed -i '/zenbook-duo-keyboard-watch/d' "$HYPR_DIR/autostart.lua"
 fi
 
+if [[ $EUID -eq 0 ]]; then
+  rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb
+  systemd-hwdb update
+  udevadm trigger --subsystem-match=input --action=change || true
+elif sudo -n true 2>/dev/null; then
+  sudo rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb
+  sudo systemd-hwdb update
+  sudo udevadm trigger --subsystem-match=input --action=change || true
+elif command -v pkexec >/dev/null; then
+  pkexec /bin/bash -c 'rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb; systemd-hwdb update; udevadm trigger --subsystem-match=input --action=change'
+fi
+
 systemctl --user daemon-reload
 
 if command -v hyprctl >/dev/null && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then

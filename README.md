@@ -10,6 +10,7 @@ Linux does not turn the bottom OLED off when the keyboard snaps onto it. This ov
 - Leaves both screens on when the keyboard is used over **Bluetooth** (not covering the glass).
 - Maps each ELAN digitizer/stylus to the panel it sits on, and inhibits the bottom digitizer while the keyboard is covering it.
 - Stacks the bottom panel under the top one (`auto-down`) in dual-screen mode.
+- Trackpad palm rejection: treat the Duo keyboard+touchpad as a laptop combo (`AttrTPKComboLayout=below`), enable disable-while-typing, and ignore the extra relative-mouse node. The touchpad does not report contact size, so resting palms *without* typing is still limited.
 
 ## Install
 
@@ -45,7 +46,10 @@ Issues on `basecamp/omarchy` are for validated bugs in Omarchy itself, not for d
 ```
 bin/omarchy-hw-asus-zenbook-duo   # UX8406 detector
 bin/zenbook-duo-keyboard-watch    # USB snap watcher (reloads Hyprland)
-config/hypr/duo.lua               # snap detection, monitors, digitizers
+bin/install-system.sh             # libinput quirks + udev hwdb (root)
+config/hypr/duo.lua               # snap detection, monitors, digitizers, trackpad
 config/hypr/monitors.lua          # Duo display layout
+config/libinput/omarchy-zenbookduo.quirks
+config/udev/61-omarchy-zenbookduo.hwdb
 systemd/zenbook-duo-keyboard-watch.service
 ```

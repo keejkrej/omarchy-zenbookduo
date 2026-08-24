@@ -60,6 +60,25 @@ function M.apply_devices()
       })
     end
   end
+
+  M.apply_input()
+end
+
+-- Disable-while-typing plus drop the relative mouse node. That node has no
+-- palm detection; the actual touchpad is *-keyboard-touchpad.
+function M.apply_input()
+  hl.config({
+    input = {
+      touchpad = {
+        disable_while_typing = true,
+      },
+    },
+  })
+
+  hl.device({
+    name = "primax-electronics-ltd.-asus-zenbook-duo-keyboard-mouse",
+    enabled = false,
+  })
 end
 
 return M

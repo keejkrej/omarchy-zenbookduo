@@ -49,6 +49,24 @@ require(\"hypr.duo\").apply_devices()"
 systemctl --user daemon-reload
 systemctl --user enable --now zenbook-duo-keyboard-watch.service
 
+install_system() {
+  local sys="$REPO/bin/install-system.sh"
+  chmod +x "$sys"
+  if [[ $EUID -eq 0 ]]; then
+    "$sys"
+  elif sudo -n true 2>/dev/null; then
+    sudo "$sys"
+  elif command -v pkexec >/dev/null; then
+    pkexec "$sys"
+  else
+    echo "Palm rejection needs root to install libinput quirks:" >&2
+    echo "  sudo $sys" >&2
+    return 1
+  fi
+}
+
+install_system || true
+
 if command -v hyprctl >/dev/null && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
   hyprctl reload >/dev/null
   hyprctl configerrors
@@ -56,3 +74,4 @@ fi
 
 echo "Installed Zenbook Duo overlay from $REPO"
 echo "Bottom display turns off while the keyboard is snapped on over USB."
+echo "Trackpad palm rejection: disable-while-typing + libinput TPK combo quirks."

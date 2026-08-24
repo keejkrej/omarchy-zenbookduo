@@ -1,0 +1,20 @@
+# Mark the Duo keyboard touchpad as internal so disable-while-typing and
+# palm heuristics apply. USB 1bf2/1b2c, Bluetooth 1b2d (2024) / 1bf3 (2025).
+
+touchpad:usb:v0b05p1bf2:*
+ ID_INPUT_TOUCHPAD_INTEGRATION=internal
+
+touchpad:usb:v0b05p1b2c:*
+ ID_INPUT_TOUCHPAD_INTEGRATION=internal
+
+touchpad:bluetooth:v0b05p1bf2:*
+ ID_INPUT_TOUCHPAD_INTEGRATION=internal
+
+touchpad:bluetooth:v0b05p1b2c:*
+ ID_INPUT_TOUCHPAD_INTEGRATION=internal
+
+touchpad:bluetooth:v0b05p1b2d:*
+ ID_INPUT_TOUCHPAD_INTEGRATION=internal
+
+touchpad:bluetooth:v0b05p1bf3:*
+ ID_INPUT_TOUCHPAD_INTEGRATION=internal
