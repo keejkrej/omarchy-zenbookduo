@@ -11,7 +11,7 @@ Linux does not turn the bottom OLED off when the keyboard snaps onto it. This ov
 - Maps each ELAN digitizer/stylus to the panel it sits on, and inhibits the bottom digitizer while the keyboard is covering it.
 - Stacks the bottom panel under the top one (`auto-down`) in dual-screen mode.
 - Trackpad palm rejection: treat the Duo keyboard+touchpad as a laptop combo (`AttrTPKComboLayout=below`), enable disable-while-typing, and ignore the extra relative-mouse node. The touchpad does not report contact size, so resting palms *without* typing is still limited.
-- Fn row on the USB keyboard: media keys by default (mute / volume / brightness / mic mute), hold Fn for F1–F12. F4 cycles keyboard backlight. Emoji key opens the Omarchy emoji picker.
+- Fn row on the USB keyboard: media keys by default (mute / volume / brightness / mic mute), hold Fn for F1–F12. Fn+Esc toggles that so F1–F12 become the default. F4 cycles keyboard backlight. Emoji key opens the Omarchy emoji picker.
 
 ## Install
 

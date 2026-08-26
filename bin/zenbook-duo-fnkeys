@@ -29,8 +29,13 @@ USB_VENDOR = 0x0B05
 USB_PRODUCTS = {0x1BF2, 0x1B2C}  # UX8406CA, UX8406MA
 USAGE_PAGE_ASUS = b"\x06\x31\xff"
 
-# Feature report 0x5A, 15 payload bytes. fn_lock=on => media keys by default.
-FNLOCK_ON = bytes.fromhex("5ad04e00000000000000000000000000")
+# Feature report 0x5A, 15 payload bytes.
+# fn_lock on  (00): media keys by default, hold Fn for F1-F12.
+# fn_lock off (01): F1-F12 by default, hold Fn for media keys.
+FNLOCK_REPORT = {
+    True: bytes.fromhex("5ad04e00000000000000000000000000"),
+    False: bytes.fromhex("5ad04e01000000000000000000000000"),
+}
 BACKLIGHT = {
     0: bytes.fromhex("5abac5c4000000000000000000000000"),
     1: bytes.fromhex("5abac5c4010000000000000000000000"),
@@ -42,6 +47,7 @@ BACKLIGHT = {
 USAGE_RELEASE = 0x00
 USAGE_BRIGHTNESS_DOWN = 0x10
 USAGE_BRIGHTNESS_UP = 0x20
+USAGE_FNLOCK = 0x4E
 USAGE_MICMUTE = 0x7C
 USAGE_EMOJI = 0x7E
 USAGE_BACKLIGHT = 0xC7
@@ -62,11 +68,12 @@ UI_SET_EVBIT = 0x40045564
 UI_SET_KEYBIT = 0x40045565
 
 LOCK_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "zenbook-duo-fnkeys.lock"
-STATE_PATH = (
+STATE_DIR = (
     Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
     / "omarchy-zenbookduo"
-    / "kbd-backlight"
 )
+STATE_PATH = STATE_DIR / "kbd-backlight"
+FNLOCK_PATH = STATE_DIR / "fn-lock"
 
 
 def log(msg: str) -> None:
@@ -134,21 +141,40 @@ def load_backlight() -> int | None:
 
 
 def save_backlight(level: int) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(f"{level}\n")
 
 
-def osd_keyboard(level: int) -> None:
-    percent = 0 if level <= 0 else int(round(level * 100 / 3))
+def load_fnlock() -> bool:
+    try:
+        return FNLOCK_PATH.read_text().strip() not in {"0", "off", "false"}
+    except OSError:
+        return True
+
+
+def save_fnlock(enabled: bool) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    FNLOCK_PATH.write_text("1\n" if enabled else "0\n")
+
+
+def osd(icon: str, message: str, progress: int | None = None) -> None:
+    cmd = ["omarchy-osd", "-i", icon, "-m", message]
+    if progress is not None:
+        cmd.extend(["-p", str(progress)])
     try:
         subprocess.Popen(
-            ["omarchy-osd", "-i", "keyboard", "-p", str(percent)],
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     except OSError:
         pass
+
+
+def osd_keyboard(level: int) -> None:
+    percent = 0 if level <= 0 else int(round(level * 100 / 3))
+    osd("keyboard", f"Backlight {level}/3", percent)
 
 
 def toggle_emojis() -> None:
@@ -223,10 +249,14 @@ class Keyboard:
         self.fd = os.open(hidraw, os.O_RDWR)
         saved = load_backlight()
         self.backlight = 0 if saved is None else saved
-        hid_set_feature(self.fd, FNLOCK_ON)
+        self.fn_lock = load_fnlock()
+        hid_set_feature(self.fd, FNLOCK_REPORT[self.fn_lock])
         if saved is not None:
             hid_set_feature(self.fd, BACKLIGHT[self.backlight])
-        log(f"initialized {hidraw} (fn-lock on, backlight {self.backlight})")
+        log(
+            f"initialized {hidraw} (fn-lock {'on' if self.fn_lock else 'off'}, "
+            f"backlight {self.backlight})"
+        )
 
     def set_backlight(self, level: int) -> None:
         self.backlight = max(0, min(3, level))
@@ -238,6 +268,20 @@ class Keyboard:
     def cycle_backlight(self) -> None:
         self.set_backlight((self.backlight + 1) % 4)
 
+    def set_fn_lock(self, enabled: bool) -> None:
+        self.fn_lock = enabled
+        hid_set_feature(self.fd, FNLOCK_REPORT[self.fn_lock])
+        save_fnlock(self.fn_lock)
+        if self.fn_lock:
+            osd("keyboard", "Fn lock: media keys")
+            log("fn-lock on (media keys default, hold Fn for F1-F12)")
+        else:
+            osd("keyboard", "Fn lock: F1-F12")
+            log("fn-lock off (F1-F12 default, hold Fn for media keys)")
+
+    def toggle_fn_lock(self) -> None:
+        self.set_fn_lock(not self.fn_lock)
+
     def close(self) -> None:
         os.close(self.fd)
 
@@ -248,6 +292,9 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
     usage = data[1]
     if usage == USAGE_RELEASE:
         uinput.release_all()
+        return
+    if usage == USAGE_FNLOCK:
+        kbd.toggle_fn_lock()
         return
     if usage == USAGE_BACKLIGHT:
         kbd.cycle_backlight()
@@ -336,7 +383,29 @@ def main() -> int:
         kbd.set_backlight(int(sys.argv[2]))
         kbd.close()
         return 0
-    log("usage: zenbook-duo-fnkeys [watch|init|set-backlight 0-3]")
+    if cmd == "set-fn-lock":
+        if len(sys.argv) < 3:
+            log("usage: zenbook-duo-fnkeys set-fn-lock on|off|toggle")
+            return 2
+        hidraw = find_fn_hidraw()
+        if hidraw is None:
+            log("no Duo keyboard vendor hidraw found")
+            return 1
+        kbd = Keyboard(hidraw)
+        arg = sys.argv[2].lower()
+        if arg in {"on", "1", "true"}:
+            kbd.set_fn_lock(True)
+        elif arg in {"off", "0", "false"}:
+            kbd.set_fn_lock(False)
+        elif arg == "toggle":
+            kbd.toggle_fn_lock()
+        else:
+            log("usage: zenbook-duo-fnkeys set-fn-lock on|off|toggle")
+            kbd.close()
+            return 2
+        kbd.close()
+        return 0
+    log("usage: zenbook-duo-fnkeys [watch|init|set-backlight 0-3|set-fn-lock on|off|toggle]")
     return 2
 
 
