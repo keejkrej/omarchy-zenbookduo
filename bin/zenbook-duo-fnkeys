@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""Enable the Zenbook Duo keyboard's media/Fn row over USB.
+
+The Primax 0b05:1bf2 / 0b05:1b2c keyboard keeps volume, brightness, and
+backlight on a vendor HID interface (usage page 0xFF31). hid-generic
+ignores those reports, so the top row looks like dead F-keys.
+
+This daemon:
+  1. Sends the ASUS Fn-lock feature report so mute/volume come through as
+     normal consumer keys (hold Fn for F1-F12).
+  2. Reads the remaining vendor reports and injects evdev keys Hyprland
+     already binds (brightness, mic mute).
+  3. Cycles keyboard backlight over the same HID feature report — there is
+     no asus::kbd_backlight LED on this machine.
+"""
+
+from __future__ import annotations
+
+import array
+import fcntl
+import os
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+USB_VENDOR = 0x0B05
+USB_PRODUCTS = {0x1BF2, 0x1B2C}  # UX8406CA, UX8406MA
+USAGE_PAGE_ASUS = b"\x06\x31\xff"
+
+# Feature report 0x5A, 15 payload bytes. fn_lock=on => media keys by default.
+FNLOCK_ON = bytes.fromhex("5ad04e00000000000000000000000000")
+BACKLIGHT = {
+    0: bytes.fromhex("5abac5c4000000000000000000000000"),
+    1: bytes.fromhex("5abac5c4010000000000000000000000"),
+    2: bytes.fromhex("5abac5c4020000000000000000000000"),
+    3: bytes.fromhex("5abac5c4030000000000000000000000"),
+}
+
+# Vendor input report 0x5A, second byte is the usage.
+USAGE_RELEASE = 0x00
+USAGE_BRIGHTNESS_DOWN = 0x10
+USAGE_BRIGHTNESS_UP = 0x20
+USAGE_MICMUTE = 0x7C
+USAGE_EMOJI = 0x7E
+USAGE_BACKLIGHT = 0xC7
+
+KEY_BRIGHTNESSDOWN = 224
+KEY_BRIGHTNESSUP = 225
+KEY_MICMUTE = 248
+
+EV_SYN = 0
+EV_KEY = 1
+SYN_REPORT = 0
+BUS_USB = 0x03
+
+UI_DEV_CREATE = 0x5501
+UI_DEV_DESTROY = 0x5502
+UI_DEV_SETUP = 0x405C5503  # _IOW('U', 3, struct uinput_setup) size 0x5c
+UI_SET_EVBIT = 0x40045564
+UI_SET_KEYBIT = 0x40045565
+
+LOCK_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "zenbook-duo-fnkeys.lock"
+STATE_PATH = (
+    Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    / "omarchy-zenbookduo"
+    / "kbd-backlight"
+)
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def hid_ioc(nr: int, length: int) -> int:
+    # _IOC(_IOC_WRITE|_IOC_READ, 'H', nr, length)
+    return 0xC0000000 | (length << 16) | (ord("H") << 8) | nr
+
+
+def hid_set_feature(fd: int, report: bytes) -> None:
+    buf = array.array("B", report)
+    fcntl.ioctl(fd, hid_ioc(0x06, len(buf)), buf, True)
+
+
+def hid_info(path: Path) -> tuple[int, int, int] | None:
+    """Return (bustype, vendor, product) for a hidraw node, or None."""
+    info_path = Path("/sys/class/hidraw") / path.name / "device" / "uevent"
+    try:
+        text = info_path.read_text()
+    except OSError:
+        return None
+    hid_id = None
+    for line in text.splitlines():
+        if line.startswith("HID_ID="):
+            hid_id = line.split("=", 1)[1].strip()
+            break
+    if not hid_id:
+        return None
+    parts = hid_id.split(":")
+    if len(parts) != 3:
+        return None
+    return int(parts[0], 16), int(parts[1], 16), int(parts[2], 16)
+
+
+def is_asus_fn_hidraw(path: Path) -> bool:
+    info = hid_info(path)
+    if not info:
+        return False
+    bus, vendor, product = info
+    if bus != BUS_USB or vendor != USB_VENDOR or product not in USB_PRODUCTS:
+        return False
+    desc = Path("/sys/class/hidraw") / path.name / "device" / "report_descriptor"
+    try:
+        return USAGE_PAGE_ASUS in desc.read_bytes()
+    except OSError:
+        return False
+
+
+def find_fn_hidraw() -> Path | None:
+    hidraw = Path("/dev")
+    for path in sorted(hidraw.glob("hidraw*")):
+        if is_asus_fn_hidraw(path):
+            return path
+    return None
+
+
+def load_backlight() -> int | None:
+    try:
+        value = int(STATE_PATH.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return max(0, min(3, value))
+
+
+def save_backlight(level: int) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(f"{level}\n")
+
+
+def osd_keyboard(level: int) -> None:
+    percent = 0 if level <= 0 else int(round(level * 100 / 3))
+    try:
+        subprocess.Popen(
+            ["omarchy-osd", "-i", "keyboard", "-p", str(percent)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
+def toggle_emojis() -> None:
+    try:
+        subprocess.Popen(
+            ["omarchy-shell", "shell", "toggle", "omarchy.emojis"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        log(f"emoji picker: {exc}")
+
+
+class UInput:
+    def __init__(self, keys: list[int]) -> None:
+        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_SYN)
+        for key in keys:
+            fcntl.ioctl(self.fd, UI_SET_KEYBIT, key)
+        setup = struct.pack(
+            "@HHHH80sI",
+            BUS_USB,
+            USB_VENDOR,
+            0x1BF2,
+            1,
+            b"Zenbook Duo Fn keys",
+            0,
+        )
+        fcntl.ioctl(self.fd, UI_DEV_SETUP, setup)
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+        time.sleep(0.05)
+        self.pressed: set[int] = set()
+
+    def _emit(self, ev_type: int, code: int, value: int) -> None:
+        now = time.time()
+        sec = int(now)
+        usec = int((now - sec) * 1_000_000)
+        os.write(self.fd, struct.pack("@llHHi", sec, usec, ev_type, code, value))
+
+    def press(self, *keys: int) -> None:
+        self.release_all()
+        for key in keys:
+            self._emit(EV_KEY, key, 1)
+            self.pressed.add(key)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def tap(self, *keys: int) -> None:
+        self.press(*keys)
+        self.release_all()
+
+    def release_all(self) -> None:
+        if not self.pressed:
+            return
+        for key in list(self.pressed):
+            self._emit(EV_KEY, key, 0)
+        self.pressed.clear()
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def close(self) -> None:
+        try:
+            self.release_all()
+            fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        finally:
+            os.close(self.fd)
+
+
+class Keyboard:
+    def __init__(self, hidraw: Path) -> None:
+        self.path = hidraw
+        self.fd = os.open(hidraw, os.O_RDWR)
+        saved = load_backlight()
+        self.backlight = 0 if saved is None else saved
+        hid_set_feature(self.fd, FNLOCK_ON)
+        if saved is not None:
+            hid_set_feature(self.fd, BACKLIGHT[self.backlight])
+        log(f"initialized {hidraw} (fn-lock on, backlight {self.backlight})")
+
+    def set_backlight(self, level: int) -> None:
+        self.backlight = max(0, min(3, level))
+        hid_set_feature(self.fd, BACKLIGHT[self.backlight])
+        save_backlight(self.backlight)
+        osd_keyboard(self.backlight)
+        log(f"keyboard backlight {self.backlight}")
+
+    def cycle_backlight(self) -> None:
+        self.set_backlight((self.backlight + 1) % 4)
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
+def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
+    if len(data) < 2 or data[0] != 0x5A:
+        return
+    usage = data[1]
+    if usage == USAGE_RELEASE:
+        uinput.release_all()
+        return
+    if usage == USAGE_BACKLIGHT:
+        kbd.cycle_backlight()
+        return
+    if usage == USAGE_BRIGHTNESS_DOWN:
+        uinput.press(KEY_BRIGHTNESSDOWN)
+        return
+    if usage == USAGE_BRIGHTNESS_UP:
+        uinput.press(KEY_BRIGHTNESSUP)
+        return
+    if usage == USAGE_MICMUTE:
+        uinput.tap(KEY_MICMUTE)
+        return
+    if usage == USAGE_EMOJI:
+        toggle_emojis()
+        return
+    log(f"unhandled vendor usage 0x{usage:02x}: {data[:6].hex()}")
+
+
+def run_device(hidraw: Path) -> None:
+    kbd = Keyboard(hidraw)
+    uinput = UInput([KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP, KEY_MICMUTE])
+    try:
+        while True:
+            data = os.read(kbd.fd, 64)
+            if not data:
+                raise OSError("hidraw closed")
+            handle_report(data, kbd, uinput)
+    finally:
+        uinput.close()
+        kbd.close()
+
+
+def acquire_lock() -> int:
+    fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("another zenbook-duo-fnkeys is already running")
+        os.close(fd)
+        sys.exit(0)
+    return fd
+
+
+def watch() -> None:
+    acquire_lock()
+    log("watching for Zenbook Duo USB keyboard")
+    while True:
+        hidraw = find_fn_hidraw()
+        if hidraw is None:
+            time.sleep(1.5)
+            continue
+        try:
+            run_device(hidraw)
+        except (OSError, struct.error, ValueError) as exc:
+            log(f"{hidraw}: {exc}")
+        time.sleep(1.0)
+
+
+def init_only() -> int:
+    hidraw = find_fn_hidraw()
+    if hidraw is None:
+        log("no Duo keyboard vendor hidraw found")
+        return 1
+    kbd = Keyboard(hidraw)
+    kbd.close()
+    return 0
+
+
+def main() -> int:
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "watch"
+    if cmd == "watch":
+        watch()
+        return 0
+    if cmd == "init":
+        return init_only()
+    if cmd == "set-backlight":
+        if len(sys.argv) < 3:
+            log("usage: zenbook-duo-fnkeys set-backlight 0-3")
+            return 2
+        hidraw = find_fn_hidraw()
+        if hidraw is None:
+            log("no Duo keyboard vendor hidraw found")
+            return 1
+        kbd = Keyboard(hidraw)
+        kbd.set_backlight(int(sys.argv[2]))
+        kbd.close()
+        return 0
+    log("usage: zenbook-duo-fnkeys [watch|init|set-backlight 0-3]")
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

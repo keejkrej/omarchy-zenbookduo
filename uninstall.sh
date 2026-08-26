@@ -10,8 +10,9 @@ STAMP="-- omarchy-zenbookduo"
 TEMPLATE="${OMARCHY_PATH:-/usr/share/omarchy}/config/hypr/monitors.lua"
 
 systemctl --user disable --now zenbook-duo-keyboard-watch.service 2>/dev/null || true
-rm -f "$UNIT_DIR/zenbook-duo-keyboard-watch.service"
-rm -f "$BIN_DIR/zenbook-duo-keyboard-watch"
+systemctl --user disable --now zenbook-duo-fnkeys.service 2>/dev/null || true
+rm -f "$UNIT_DIR/zenbook-duo-keyboard-watch.service" "$UNIT_DIR/zenbook-duo-fnkeys.service"
+rm -f "$BIN_DIR/zenbook-duo-keyboard-watch" "$BIN_DIR/zenbook-duo-fnkeys"
 rm -f "$HYPR_DIR/duo.lua"
 
 if [[ -L $HYPR_DIR/monitors.lua ]]; then
@@ -34,16 +35,21 @@ if [[ -f $HYPR_DIR/autostart.lua ]]; then
   sed -i '/zenbook-duo-keyboard-watch/d' "$HYPR_DIR/autostart.lua"
 fi
 
-if [[ $EUID -eq 0 ]]; then
-  rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb
+remove_system() {
+  rm -f /etc/libinput/omarchy-zenbookduo.quirks \
+    /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb \
+    /etc/udev/rules.d/61-omarchy-zenbookduo.rules
   systemd-hwdb update
+  udevadm control --reload-rules || true
   udevadm trigger --subsystem-match=input --action=change || true
+}
+
+if [[ $EUID -eq 0 ]]; then
+  remove_system
 elif sudo -n true 2>/dev/null; then
-  sudo rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb
-  sudo systemd-hwdb update
-  sudo udevadm trigger --subsystem-match=input --action=change || true
+  sudo bash -c "$(declare -f remove_system); remove_system"
 elif command -v pkexec >/dev/null; then
-  pkexec /bin/bash -c 'rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb; systemd-hwdb update; udevadm trigger --subsystem-match=input --action=change'
+  pkexec /bin/bash -c 'rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb /etc/udev/rules.d/61-omarchy-zenbookduo.rules; systemd-hwdb update; udevadm control --reload-rules; udevadm trigger --subsystem-match=input --action=change'
 fi
 
 systemctl --user daemon-reload

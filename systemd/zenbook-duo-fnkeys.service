@@ -1,0 +1,12 @@
+[Unit]
+Description=Zenbook Duo keyboard Fn-row and backlight
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/zenbook-duo-fnkeys watch
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
