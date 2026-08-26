@@ -52,8 +52,6 @@ USAGE_MICMUTE = 0x7C
 USAGE_EMOJI = 0x7E
 USAGE_BACKLIGHT = 0xC7
 
-KEY_LEFTCTRL = 29
-KEY_LEFTMETA = 125  # Super
 KEY_BRIGHTNESSDOWN = 224
 KEY_BRIGHTNESSUP = 225
 
@@ -190,6 +188,21 @@ def toggle_emojis() -> None:
         log(f"emoji picker: {exc}")
 
 
+def voxtype_record(action: str) -> None:
+    try:
+        subprocess.Popen(
+            ["voxtype", "record", action],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        log(f"voxtype record {action}: {exc}")
+
+
+_dictating = False
+
+
 class UInput:
     def __init__(self, keys: list[int]) -> None:
         self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
@@ -288,11 +301,15 @@ class Keyboard:
 
 
 def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
+    global _dictating
     if len(data) < 2 or data[0] != 0x5A:
         return
     usage = data[1]
     if usage == USAGE_RELEASE:
         uinput.release_all()
+        if _dictating:
+            voxtype_record("stop")
+            _dictating = False
         return
     if usage == USAGE_FNLOCK:
         kbd.toggle_fn_lock()
@@ -307,8 +324,9 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
         uinput.press(KEY_BRIGHTNESSUP)
         return
     if usage == USAGE_MICMUTE:
-        # Duo mic/F9 key: hold Ctrl+Super (Wispr Flow / voxtype push-to-talk).
-        uinput.press(KEY_LEFTCTRL, KEY_LEFTMETA)
+        if not _dictating:
+            voxtype_record("start")
+            _dictating = True
         return
     if usage == USAGE_EMOJI:
         toggle_emojis()
@@ -317,10 +335,9 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
 
 
 def run_device(hidraw: Path) -> None:
+    global _dictating
     kbd = Keyboard(hidraw)
-    uinput = UInput(
-        [KEY_LEFTCTRL, KEY_LEFTMETA, KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP]
-    )
+    uinput = UInput([KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP])
     try:
         while True:
             data = os.read(kbd.fd, 64)
@@ -328,6 +345,9 @@ def run_device(hidraw: Path) -> None:
                 raise OSError("hidraw closed")
             handle_report(data, kbd, uinput)
     finally:
+        if _dictating:
+            voxtype_record("stop")
+            _dictating = False
         uinput.close()
         kbd.close()
 
