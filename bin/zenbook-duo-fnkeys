@@ -19,6 +19,7 @@ from __future__ import annotations
 import array
 import fcntl
 import os
+import select
 import struct
 import subprocess
 import sys
@@ -52,6 +53,8 @@ USAGE_MICMUTE = 0x7C
 USAGE_EMOJI = 0x7E
 USAGE_BACKLIGHT = 0xC7
 
+KEY_LEFTCTRL = 29
+KEY_LEFTMETA = 125
 KEY_BRIGHTNESSDOWN = 224
 KEY_BRIGHTNESSUP = 225
 
@@ -59,6 +62,10 @@ EV_SYN = 0
 EV_KEY = 1
 SYN_REPORT = 0
 BUS_USB = 0x03
+EVDEV_EVENT = struct.Struct("@llHHi")
+DUO_KBD_EVDEV = Path(
+    "/dev/input/by-id/usb-Primax_Electronics_Ltd._ASUS_Zenbook_Duo_Keyboard-event-kbd"
+)
 
 UI_DEV_CREATE = 0x5501
 UI_DEV_DESTROY = 0x5502
@@ -200,7 +207,42 @@ def voxtype_record(action: str) -> None:
         log(f"voxtype record {action}: {exc}")
 
 
-_dictating = False
+class Dictation:
+    """Hold-to-talk. Stop as soon as the source that started it is released."""
+
+    def __init__(self) -> None:
+        self.source: str | None = None
+        self.ctrl = False
+        self.meta = False
+
+    def start(self, source: str) -> None:
+        if self.source:
+            return
+        voxtype_record("start")
+        self.source = source
+        log(f"dictation start ({source})")
+
+    def stop(self, source: str | None = None) -> None:
+        if not self.source:
+            return
+        if source is not None and source != self.source:
+            return
+        voxtype_record("stop")
+        log(f"dictation stop ({self.source})")
+        self.source = None
+
+    def on_combo_key(self, code: int, value: int) -> None:
+        down = value != 0
+        if code == KEY_LEFTCTRL:
+            self.ctrl = down
+        elif code == KEY_LEFTMETA:
+            self.meta = down
+        else:
+            return
+        if self.ctrl and self.meta:
+            self.start("combo")
+        else:
+            self.stop("combo")
 
 
 class UInput:
@@ -300,16 +342,13 @@ class Keyboard:
         os.close(self.fd)
 
 
-def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
-    global _dictating
+def handle_report(data: bytes, kbd: Keyboard, uinput: UInput, talk: Dictation) -> None:
     if len(data) < 2 or data[0] != 0x5A:
         return
     usage = data[1]
     if usage == USAGE_RELEASE:
         uinput.release_all()
-        if _dictating:
-            voxtype_record("stop")
-            _dictating = False
+        talk.stop("fn9")
         return
     if usage == USAGE_FNLOCK:
         kbd.toggle_fn_lock()
@@ -324,9 +363,7 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
         uinput.press(KEY_BRIGHTNESSUP)
         return
     if usage == USAGE_MICMUTE:
-        if not _dictating:
-            voxtype_record("start")
-            _dictating = True
+        talk.start("fn9")
         return
     if usage == USAGE_EMOJI:
         toggle_emojis()
@@ -334,20 +371,43 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
     log(f"unhandled vendor usage 0x{usage:02x}: {data[:6].hex()}")
 
 
+def handle_evdev(fd: int, talk: Dictation) -> None:
+    try:
+        raw = os.read(fd, EVDEV_EVENT.size * 32)
+    except BlockingIOError:
+        return
+    if not raw:
+        raise OSError("keyboard evdev closed")
+    for offset in range(0, len(raw) // EVDEV_EVENT.size * EVDEV_EVENT.size, EVDEV_EVENT.size):
+        _sec, _usec, ev_type, code, value = EVDEV_EVENT.unpack_from(raw, offset)
+        if ev_type == EV_KEY:
+            talk.on_combo_key(code, value)
+
+
 def run_device(hidraw: Path) -> None:
-    global _dictating
     kbd = Keyboard(hidraw)
     uinput = UInput([KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP])
+    talk = Dictation()
+    evdev_path = DUO_KBD_EVDEV if DUO_KBD_EVDEV.exists() else None
+    evdev_fd: int | None = None
+    if evdev_path is not None:
+        evdev_fd = os.open(evdev_path, os.O_RDONLY | os.O_NONBLOCK)
+        log(f"ctrl+super PTT on {evdev_path}")
     try:
+        fds = [kbd.fd] if evdev_fd is None else [kbd.fd, evdev_fd]
         while True:
-            data = os.read(kbd.fd, 64)
-            if not data:
-                raise OSError("hidraw closed")
-            handle_report(data, kbd, uinput)
+            ready, _, _ = select.select(fds, [], [])
+            if kbd.fd in ready:
+                data = os.read(kbd.fd, 64)
+                if not data:
+                    raise OSError("hidraw closed")
+                handle_report(data, kbd, uinput, talk)
+            if evdev_fd is not None and evdev_fd in ready:
+                handle_evdev(evdev_fd, talk)
     finally:
-        if _dictating:
-            voxtype_record("stop")
-            _dictating = False
+        talk.stop()
+        if evdev_fd is not None:
+            os.close(evdev_fd)
         uinput.close()
         kbd.close()
 
