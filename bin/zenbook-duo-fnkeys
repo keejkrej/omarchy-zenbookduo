@@ -52,9 +52,10 @@ USAGE_MICMUTE = 0x7C
 USAGE_EMOJI = 0x7E
 USAGE_BACKLIGHT = 0xC7
 
+KEY_LEFTCTRL = 29
+KEY_LEFTMETA = 125  # Super
 KEY_BRIGHTNESSDOWN = 224
 KEY_BRIGHTNESSUP = 225
-KEY_MICMUTE = 248
 
 EV_SYN = 0
 EV_KEY = 1
@@ -208,7 +209,7 @@ class UInput:
         fcntl.ioctl(self.fd, UI_DEV_SETUP, setup)
         fcntl.ioctl(self.fd, UI_DEV_CREATE)
         time.sleep(0.05)
-        self.pressed: set[int] = set()
+        self.pressed: list[int] = []
 
     def _emit(self, ev_type: int, code: int, value: int) -> None:
         now = time.time()
@@ -220,7 +221,7 @@ class UInput:
         self.release_all()
         for key in keys:
             self._emit(EV_KEY, key, 1)
-            self.pressed.add(key)
+            self.pressed.append(key)
         self._emit(EV_SYN, SYN_REPORT, 0)
 
     def tap(self, *keys: int) -> None:
@@ -230,7 +231,7 @@ class UInput:
     def release_all(self) -> None:
         if not self.pressed:
             return
-        for key in list(self.pressed):
+        for key in reversed(self.pressed):
             self._emit(EV_KEY, key, 0)
         self.pressed.clear()
         self._emit(EV_SYN, SYN_REPORT, 0)
@@ -306,7 +307,8 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
         uinput.press(KEY_BRIGHTNESSUP)
         return
     if usage == USAGE_MICMUTE:
-        uinput.tap(KEY_MICMUTE)
+        # Duo mic/F9 key: hold Ctrl+Super (Wispr Flow / voxtype push-to-talk).
+        uinput.press(KEY_LEFTCTRL, KEY_LEFTMETA)
         return
     if usage == USAGE_EMOJI:
         toggle_emojis()
@@ -316,7 +318,9 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput) -> None:
 
 def run_device(hidraw: Path) -> None:
     kbd = Keyboard(hidraw)
-    uinput = UInput([KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP, KEY_MICMUTE])
+    uinput = UInput(
+        [KEY_LEFTCTRL, KEY_LEFTMETA, KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP]
+    )
     try:
         while True:
             data = os.read(kbd.fd, 64)
