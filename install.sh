@@ -33,14 +33,20 @@ fi
 mkdir -p "$HYPR_DIR" "$BIN_DIR" "$UNIT_DIR"
 
 backup "$HYPR_DIR/duo.lua"
-backup "$HYPR_DIR/monitors.lua"
 backup "$BIN_DIR/zenbook-duo-keyboard-watch"
 backup "$BIN_DIR/zenbook-duo-fnkeys"
 backup "$UNIT_DIR/zenbook-duo-keyboard-watch.service"
 backup "$UNIT_DIR/zenbook-duo-fnkeys.service"
 
 ln -sfn "$REPO/config/hypr/duo.lua" "$HYPR_DIR/duo.lua"
-ln -sfn "$REPO/config/hypr/monitors.lua" "$HYPR_DIR/monitors.lua"
+
+# omarchy-config owns monitors.lua when that overlay is installed.
+if [[ -L $HYPR_DIR/monitors.lua ]]; then
+  echo "Leaving $HYPR_DIR/monitors.lua in place"
+else
+  backup "$HYPR_DIR/monitors.lua"
+  ln -sfn "$REPO/config/hypr/monitors.lua" "$HYPR_DIR/monitors.lua"
+fi
 ln -sfn "$REPO/bin/zenbook-duo-keyboard-watch" "$BIN_DIR/zenbook-duo-keyboard-watch"
 ln -sfn "$REPO/bin/zenbook-duo-fnkeys" "$BIN_DIR/zenbook-duo-fnkeys"
 chmod +x "$REPO/bin/zenbook-duo-keyboard-watch" "$REPO/bin/zenbook-duo-fnkeys" "$REPO/bin/omarchy-hw-asus-zenbook-duo"

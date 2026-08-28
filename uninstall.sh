@@ -16,10 +16,14 @@ rm -f "$BIN_DIR/zenbook-duo-keyboard-watch" "$BIN_DIR/zenbook-duo-fnkeys"
 rm -f "$HYPR_DIR/duo.lua"
 
 if [[ -L $HYPR_DIR/monitors.lua ]]; then
-  rm -f "$HYPR_DIR/monitors.lua"
-  if [[ -f $TEMPLATE ]]; then
-    cp "$TEMPLATE" "$HYPR_DIR/monitors.lua"
-  fi
+  case $(readlink -f "$HYPR_DIR/monitors.lua") in
+    *omarchy-zenbookduo/config/hypr/monitors.lua)
+      rm -f "$HYPR_DIR/monitors.lua"
+      if [[ -f $TEMPLATE ]]; then
+        cp "$TEMPLATE" "$HYPR_DIR/monitors.lua"
+      fi
+      ;;
+  esac
 fi
 
 if [[ -f $HYPR_DIR/input.lua ]]; then

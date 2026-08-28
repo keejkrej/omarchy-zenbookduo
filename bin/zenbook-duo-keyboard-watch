@@ -1,10 +1,19 @@
 #!/bin/bash
 # Reload Hyprland when the Zenbook Duo keyboard is snapped on or taken off.
 # Monitor rules in hypr.duo read the USB pogo-pin state.
+#
+# Re-enabling eDP-2 after disable can leave the panel in the layout but black:
+# DPMS stays off, no active workspace, or the eDP-2 backlight never commits.
+# After a detach we wake the output, not only reload.
 
 LOCK="${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-keyboard-watch.lock"
+SYNC_LOCK="${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-keyboard-sync.lock"
 USB_VENDOR="0b05"
 BOTTOM_OUTPUT="eDP-2"
+
+log() {
+  printf '%s\n' "$*"
+}
 
 keyboard_attached() {
   local device vendor product
@@ -20,20 +29,139 @@ keyboard_attached() {
   return 1
 }
 
+hypr_dispatch() {
+  hyprctl dispatch "$1" >/dev/null 2>&1 || true
+}
+
+bottom_monitor_json() {
+  hyprctl monitors all -j 2>/dev/null | jq -c --arg output "$BOTTOM_OUTPUT" \
+    '.[] | select(.name == $output)' 2>/dev/null
+}
+
 bottom_enabled() {
-  hyprctl monitors all -j 2>/dev/null | jq -e --arg output "$BOTTOM_OUTPUT" \
-    '.[] | select(.name == $output and .disabled != true)' >/dev/null 2>&1
+  local json
+  json=$(bottom_monitor_json) || return 1
+  [[ -n $json ]] || return 1
+  jq -e '.disabled != true' <<<"$json" >/dev/null 2>&1
+}
+
+bottom_healthy() {
+  local json actual backlight
+  json=$(bottom_monitor_json) || return 1
+  [[ -n $json ]] || return 1
+  jq -e '.disabled != true and .dpmsStatus == true and ((.activeWorkspace.id // 0) != 0)' \
+    <<<"$json" >/dev/null 2>&1 || return 1
+
+  backlight=$(bottom_backlight_name) || return 0
+  actual=$(<"/sys/class/backlight/$backlight/actual_brightness")
+  [[ -n $actual && $actual -gt 0 ]]
+}
+
+backlight_name_matching() {
+  local glob=$1 path
+  for path in /sys/class/backlight/$glob; do
+    [[ -e $path/brightness ]] || continue
+    printf '%s\n' "${path##*/}"
+    return 0
+  done
+  return 1
+}
+
+bottom_backlight_name() {
+  backlight_name_matching '*eDP-2*'
+}
+
+top_backlight_name() {
+  if [[ -e /sys/class/backlight/intel_backlight/brightness ]]; then
+    printf '%s\n' intel_backlight
+    return 0
+  fi
+  backlight_name_matching '*eDP-1*'
+}
+
+set_backlight() {
+  local device=$1 value=$2 path
+  brightnessctl -d "$device" set "$value" >/dev/null 2>&1 && return 0
+  path="/sys/class/backlight/$device/brightness"
+  [[ -w $path ]] || return 1
+  printf '%s\n' "$value" >"$path"
+}
+
+sync_bottom_backlight() {
+  local src dst src_cur src_max dst_max dst_cur
+  src=$(top_backlight_name) || return 0
+  dst=$(bottom_backlight_name) || return 0
+  src_cur=$(<"/sys/class/backlight/$src/brightness")
+  src_max=$(<"/sys/class/backlight/$src/max_brightness")
+  dst_max=$(<"/sys/class/backlight/$dst/max_brightness")
+  [[ -n $src_cur && -n $src_max && $src_max -gt 0 && -n $dst_max && $dst_max -gt 0 ]] || return 0
+  dst_cur=$((src_cur * dst_max / src_max))
+  (( dst_cur < 1 )) && dst_cur=1
+  set_backlight "$dst" "$dst_cur" || true
+}
+
+ensure_bottom_workspace() {
+  local json ws parked
+  json=$(bottom_monitor_json) || return 0
+  ws=$(jq -r '.activeWorkspace.id // 0' <<<"$json")
+  [[ $ws != 0 && $ws != null && -n $ws ]] && return 0
+
+  parked=$(hyprctl workspaces -j 2>/dev/null | jq -r --arg output "$BOTTOM_OUTPUT" \
+    '[.[] | select(.monitor == $output) | .id][0] // empty')
+  if [[ -n $parked ]]; then
+    hypr_dispatch "hl.dsp.workspace.move({ workspace = $parked, monitor = \"$BOTTOM_OUTPUT\" })"
+    return 0
+  fi
+  hypr_dispatch "hl.dsp.workspace.move({ workspace = \"emptyn\", monitor = \"$BOTTOM_OUTPUT\" })"
+}
+
+wake_bottom() {
+  local tries=0
+  while (( tries < 6 )); do
+    bottom_healthy && return 0
+    tries=$((tries + 1))
+
+    if ! bottom_enabled; then
+      hyprctl reload >/dev/null 2>&1 || true
+      sleep 0.4
+    fi
+
+    hypr_dispatch "hl.dsp.dpms({ action = \"enable\", monitor = \"$BOTTOM_OUTPUT\" })"
+    ensure_bottom_workspace
+    sync_bottom_backlight
+
+    if (( tries == 4 )); then
+      hypr_dispatch 'hl.dsp.force_renderer_reload()'
+      command -v omarchy-shell >/dev/null && omarchy-shell -q background refresh || true
+    fi
+    sleep 0.4
+  done
+  log "eDP-2 still black after wake (keyboard off)"
 }
 
 sync_state() {
-  local attached=1
-  keyboard_attached || attached=0
+  (
+    flock -n 8 || exit 0
+    local attached=1
+    keyboard_attached || attached=0
 
-  if (( attached )) && bottom_enabled; then
-    hyprctl reload >/dev/null 2>&1 || true
-  elif (( !attached )) && ! bottom_enabled; then
-    hyprctl reload >/dev/null 2>&1 || true
-  fi
+    if (( attached )); then
+      if bottom_enabled; then
+        log "keyboard snapped on: disable $BOTTOM_OUTPUT"
+        hyprctl reload >/dev/null 2>&1 || true
+      fi
+    else
+      if ! bottom_enabled; then
+        log "keyboard off: enable $BOTTOM_OUTPUT"
+        hyprctl reload >/dev/null 2>&1 || true
+        sleep 0.4
+      fi
+      if ! bottom_healthy; then
+        log "wake $BOTTOM_OUTPUT"
+        wake_bottom
+      fi
+    fi
+  ) 8>"$SYNC_LOCK"
 }
 
 watch() {

@@ -208,12 +208,13 @@ def voxtype_record(action: str) -> None:
 
 
 class Dictation:
-    """Hold-to-talk. Stop as soon as the source that started it is released."""
+    """Fn/Mic is hold-to-talk. Ctrl+Super taps start or stop."""
 
     def __init__(self) -> None:
         self.source: str | None = None
         self.ctrl = False
         self.meta = False
+        self.combo_held = False
 
     def start(self, source: str) -> None:
         if self.source:
@@ -231,7 +232,15 @@ class Dictation:
         log(f"dictation stop ({self.source})")
         self.source = None
 
+    def toggle(self, source: str) -> None:
+        if self.source == source:
+            self.stop(source)
+        else:
+            self.start(source)
+
     def on_combo_key(self, code: int, value: int) -> None:
+        if value == 2:
+            return
         down = value != 0
         if code == KEY_LEFTCTRL:
             self.ctrl = down
@@ -239,10 +248,10 @@ class Dictation:
             self.meta = down
         else:
             return
-        if self.ctrl and self.meta:
-            self.start("combo")
-        else:
-            self.stop("combo")
+        combo = self.ctrl and self.meta
+        if combo and not self.combo_held:
+            self.toggle("combo")
+        self.combo_held = combo
 
 
 class UInput:
@@ -392,7 +401,7 @@ def run_device(hidraw: Path) -> None:
     evdev_fd: int | None = None
     if evdev_path is not None:
         evdev_fd = os.open(evdev_path, os.O_RDONLY | os.O_NONBLOCK)
-        log(f"ctrl+super PTT on {evdev_path}")
+        log(f"ctrl+super dictation toggle on {evdev_path}")
     try:
         fds = [kbd.fd] if evdev_fd is None else [kbd.fd, evdev_fd]
         while True:

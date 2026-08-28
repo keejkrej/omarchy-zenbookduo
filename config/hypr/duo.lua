@@ -34,7 +34,16 @@ function M.apply_monitors(scale)
   if M.keyboard_snapped() then
     hl.monitor({ output = "eDP-2", disabled = true })
   else
-    hl.monitor({ output = "eDP-2", mode = "preferred", position = "auto-down", scale = scale })
+    -- disabled = false is required: Hyprland 0.55+ can leave a previously
+    -- disabled output in the layout with DPMS off (black panel).
+    hl.monitor({
+      output = "eDP-2",
+      mode = "preferred",
+      position = "auto-down",
+      scale = scale,
+      disabled = false,
+    })
+    hl.workspace_rule({ workspace = "2", monitor = "eDP-2", default = true })
   end
 end
 
