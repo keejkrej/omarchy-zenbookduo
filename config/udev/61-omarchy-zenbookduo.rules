@@ -1,8 +1,14 @@
-# ASUS Zenbook Duo detachable keyboard (USB pogo-pin).
+# ASUS Zenbook Duo detachable keyboard.
 # Vendor HID reports for the Fn row and backlight live on hidraw; uinput
 # injects the keys Hyprland already binds.
+#
+# USB pogo-pin has idVendor/idProduct on the USB parent. Bluetooth uhid
+# does not, so match the HID device id instead (1bf3 2025, 1b2d 2024).
 
 KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1bf2", GROUP="input", MODE="0660"
 KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b2c", GROUP="input", MODE="0660"
+
+KERNEL=="hidraw*", KERNELS=="0005:0B05:1BF3.*", GROUP="input", MODE="0660"
+KERNEL=="hidraw*", KERNELS=="0005:0B05:1B2D.*", GROUP="input", MODE="0660"
 
 KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

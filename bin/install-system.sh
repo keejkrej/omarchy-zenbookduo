@@ -20,6 +20,7 @@ systemd-hwdb update
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=input --action=add
 udevadm trigger --subsystem-match=hidraw --action=add
+udevadm trigger --subsystem-match=hidraw --action=change
 udevadm trigger --subsystem-match=misc --action=add
 
 echo "Installed Duo libinput quirks, touchpad hwdb, and hidraw/uinput udev rules."

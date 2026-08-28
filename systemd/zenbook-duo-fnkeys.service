@@ -1,5 +1,5 @@
 [Unit]
-Description=Zenbook Duo keyboard Fn-row and backlight
+Description=Zenbook Duo USB/Bluetooth keyboard Fn-row and backlight
 After=graphical-session.target
 PartOf=graphical-session.target
 

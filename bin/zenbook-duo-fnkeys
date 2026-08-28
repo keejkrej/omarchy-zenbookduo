@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Enable the Zenbook Duo keyboard's media/Fn row over USB.
+"""Enable the Zenbook Duo keyboard's media/Fn row over USB and Bluetooth.
 
-The Primax 0b05:1bf2 / 0b05:1b2c keyboard keeps volume, brightness, and
-backlight on a vendor HID interface (usage page 0xFF31). hid-generic
-ignores those reports, so the top row looks like dead F-keys.
+The keyboard keeps volume, brightness, and backlight on a vendor HID
+interface (usage page 0xFF31). hid-generic ignores those reports, so the
+top row looks like dead F-keys. USB pogo-pin is 0b05:1bf2 / 0b05:1b2c;
+Bluetooth is 0b05:1bf3 (2025) / 0b05:1b2d (2024).
 
 This daemon:
   1. Sends the ASUS Fn-lock feature report so mute/volume come through as
@@ -27,12 +28,17 @@ import time
 from pathlib import Path
 
 USB_VENDOR = 0x0B05
-USB_PRODUCTS = {0x1BF2, 0x1B2C}  # UX8406CA, UX8406MA
+USB_PRODUCTS = {0x1BF2, 0x1B2C}  # pogo-pin UX8406CA / UX8406MA
+BT_PRODUCTS = {0x1BF3, 0x1B2D}  # Bluetooth UX8406CA / UX8406MA
+ALL_PRODUCTS = USB_PRODUCTS | BT_PRODUCTS
 USAGE_PAGE_ASUS = b"\x06\x31\xff"
 
 # Feature report 0x5A, 15 payload bytes.
 # fn_lock on  (00): media keys by default, hold Fn for F1-F12.
 # fn_lock off (01): F1-F12 by default, hold Fn for media keys.
+# hid-asus "ASUS Tech.Inc." handshake. Bluetooth often ignores backlight
+# until this has been sent once after the HID device appears.
+ASUS_HANDSHAKE = bytes.fromhex("5a4153555320546563682e496e632e00")
 FNLOCK_REPORT = {
     True: bytes.fromhex("5ad04e00000000000000000000000000"),
     False: bytes.fromhex("5ad04e01000000000000000000000000"),
@@ -62,8 +68,9 @@ EV_SYN = 0
 EV_KEY = 1
 SYN_REPORT = 0
 BUS_USB = 0x03
+BUS_BLUETOOTH = 0x05
 EVDEV_EVENT = struct.Struct("@llHHi")
-DUO_KBD_EVDEV = Path(
+USB_KBD_EVDEV = Path(
     "/dev/input/by-id/usb-Primax_Electronics_Ltd._ASUS_Zenbook_Duo_Keyboard-event-kbd"
 )
 
@@ -92,8 +99,20 @@ def hid_ioc(nr: int, length: int) -> int:
 
 
 def hid_set_feature(fd: int, report: bytes) -> None:
-    buf = array.array("B", report)
-    fcntl.ioctl(fd, hid_ioc(0x06, len(buf)), buf, True)
+    last_err: OSError | None = None
+    lengths = [len(report)]
+    if len(report) < 64:
+        lengths.append(64)
+    for length in lengths:
+        padded = report + bytes(length - len(report))
+        buf = array.array("B", padded)
+        try:
+            fcntl.ioctl(fd, hid_ioc(0x06, len(buf)), buf, True)
+            return
+        except OSError as exc:
+            last_err = exc
+    assert last_err is not None
+    raise last_err
 
 
 def hid_info(path: Path) -> tuple[int, int, int] | None:
@@ -121,7 +140,9 @@ def is_asus_fn_hidraw(path: Path) -> bool:
     if not info:
         return False
     bus, vendor, product = info
-    if bus != BUS_USB or vendor != USB_VENDOR or product not in USB_PRODUCTS:
+    if bus not in {BUS_USB, BUS_BLUETOOTH}:
+        return False
+    if vendor != USB_VENDOR or product not in ALL_PRODUCTS:
         return False
     desc = Path("/sys/class/hidraw") / path.name / "device" / "report_descriptor"
     try:
@@ -131,11 +152,62 @@ def is_asus_fn_hidraw(path: Path) -> bool:
 
 
 def find_fn_hidraw() -> Path | None:
-    hidraw = Path("/dev")
-    for path in sorted(hidraw.glob("hidraw*")):
-        if is_asus_fn_hidraw(path):
-            return path
+    usb: list[Path] = []
+    bluetooth: list[Path] = []
+    for path in sorted(Path("/dev").glob("hidraw*")):
+        if not is_asus_fn_hidraw(path):
+            continue
+        info = hid_info(path)
+        if info and info[0] == BUS_USB:
+            usb.append(path)
+        else:
+            bluetooth.append(path)
+    if usb:
+        return usb[0]
+    if bluetooth:
+        return bluetooth[0]
     return None
+
+
+def is_duo_keyboard_name(name: str) -> bool:
+    lowered = name.lower()
+    if "touchpad" in lowered or "mouse" in lowered:
+        return False
+    return "asus zenbook duo keyboard" in lowered
+
+
+def has_key_events(event: Path) -> bool:
+    try:
+        keys = (event / "device" / "capabilities" / "key").read_text().strip()
+    except OSError:
+        return False
+    return bool(keys.replace("0", "").replace(" ", ""))
+
+
+def find_keyboard_evdev() -> Path | None:
+    if USB_KBD_EVDEV.exists():
+        return USB_KBD_EVDEV
+
+    found_usb: Path | None = None
+    found_bt: Path | None = None
+    for event in sorted(Path("/sys/class/input").glob("event*")):
+        try:
+            name = (event / "device" / "name").read_text().strip()
+            vendor = int((event / "device" / "id" / "vendor").read_text().strip(), 16)
+            product = int((event / "device" / "id" / "product").read_text().strip(), 16)
+            bus = int((event / "device" / "id" / "bustype").read_text().strip(), 16)
+        except (OSError, ValueError):
+            continue
+        if vendor != USB_VENDOR or product not in ALL_PRODUCTS:
+            continue
+        if not is_duo_keyboard_name(name) or not has_key_events(event):
+            continue
+        path = Path("/dev/input") / event.name
+        if bus == BUS_USB and found_usb is None:
+            found_usb = path
+        elif bus == BUS_BLUETOOTH and found_bt is None:
+            found_bt = path
+    return found_usb or found_bt
 
 
 def load_backlight() -> int | None:
@@ -308,6 +380,15 @@ class UInput:
             os.close(self.fd)
 
 
+def bus_label(path: Path) -> str:
+    info = hid_info(path)
+    if not info:
+        return "unknown"
+    bus, _vendor, product = info
+    kind = "usb" if bus == BUS_USB else "bluetooth" if bus == BUS_BLUETOOTH else f"bus {bus:#x}"
+    return f"{kind} {product:04x}"
+
+
 class Keyboard:
     def __init__(self, hidraw: Path) -> None:
         self.path = hidraw
@@ -315,13 +396,21 @@ class Keyboard:
         saved = load_backlight()
         self.backlight = 0 if saved is None else saved
         self.fn_lock = load_fnlock()
-        hid_set_feature(self.fd, FNLOCK_REPORT[self.fn_lock])
+        self._feature(ASUS_HANDSHAKE, "asus handshake")
+        self._feature(FNLOCK_REPORT[self.fn_lock], "fn-lock")
         if saved is not None:
-            hid_set_feature(self.fd, BACKLIGHT[self.backlight])
+            self._feature(BACKLIGHT[self.backlight], "backlight")
         log(
-            f"initialized {hidraw} (fn-lock {'on' if self.fn_lock else 'off'}, "
+            f"initialized {hidraw} ({bus_label(hidraw)}, "
+            f"fn-lock {'on' if self.fn_lock else 'off'}, "
             f"backlight {self.backlight})"
         )
+
+    def _feature(self, report: bytes, what: str) -> None:
+        try:
+            hid_set_feature(self.fd, report)
+        except OSError as exc:
+            log(f"{what} failed on {self.path}: {exc}")
 
     def set_backlight(self, level: int) -> None:
         self.backlight = max(0, min(3, level))
@@ -397,11 +486,13 @@ def run_device(hidraw: Path) -> None:
     kbd = Keyboard(hidraw)
     uinput = UInput([KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP])
     talk = Dictation()
-    evdev_path = DUO_KBD_EVDEV if DUO_KBD_EVDEV.exists() else None
+    evdev_path = find_keyboard_evdev()
     evdev_fd: int | None = None
     if evdev_path is not None:
         evdev_fd = os.open(evdev_path, os.O_RDONLY | os.O_NONBLOCK)
         log(f"ctrl+super dictation toggle on {evdev_path}")
+    else:
+        log("no Duo keyboard evdev yet; ctrl+super dictation disabled until replug")
     try:
         fds = [kbd.fd] if evdev_fd is None else [kbd.fd, evdev_fd]
         while True:
@@ -434,7 +525,8 @@ def acquire_lock() -> int:
 
 def watch() -> None:
     acquire_lock()
-    log("watching for Zenbook Duo USB keyboard")
+    log("watching for Zenbook Duo USB/Bluetooth keyboard")
+    denied_logged = False
     while True:
         hidraw = find_fn_hidraw()
         if hidraw is None:
@@ -442,8 +534,17 @@ def watch() -> None:
             continue
         try:
             run_device(hidraw)
+            denied_logged = False
+        except PermissionError as exc:
+            if not denied_logged:
+                log(
+                    f"{hidraw}: {exc} — Bluetooth hidraw needs the Duo udev rule "
+                    "(sudo bin/install-system.sh)"
+                )
+                denied_logged = True
         except (OSError, struct.error, ValueError) as exc:
             log(f"{hidraw}: {exc}")
+            denied_logged = False
         time.sleep(1.0)
 
 

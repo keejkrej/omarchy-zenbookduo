@@ -88,6 +88,11 @@ function M.apply_input()
     name = "primax-electronics-ltd.-asus-zenbook-duo-keyboard-mouse",
     enabled = false,
   })
+  -- Bluetooth node name omits the Primax USB prefix.
+  hl.device({
+    name = "asus-zenbook-duo-keyboard-mouse",
+    enabled = false,
+  })
 end
 
 return M

@@ -85,5 +85,5 @@ fi
 
 echo "Installed Zenbook Duo overlay from $REPO"
 echo "Bottom display turns off while the keyboard is snapped on over USB."
-echo "Fn row: media keys by default, hold Fn for F1-F12; F4 cycles keyboard backlight."
+echo "Fn row (USB and Bluetooth): media keys by default, hold Fn for F1-F12; F4 cycles keyboard backlight."
 echo "Trackpad palm rejection: disable-while-typing + libinput TPK combo quirks."
