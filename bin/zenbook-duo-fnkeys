@@ -59,8 +59,6 @@ USAGE_MICMUTE = 0x7C
 USAGE_EMOJI = 0x7E
 USAGE_BACKLIGHT = 0xC7
 
-KEY_LEFTCTRL = 29
-KEY_LEFTMETA = 125
 KEY_BRIGHTNESSDOWN = 224
 KEY_BRIGHTNESSUP = 225
 
@@ -69,10 +67,6 @@ EV_KEY = 1
 SYN_REPORT = 0
 BUS_USB = 0x03
 BUS_BLUETOOTH = 0x05
-EVDEV_EVENT = struct.Struct("@llHHi")
-USB_KBD_EVDEV = Path(
-    "/dev/input/by-id/usb-Primax_Electronics_Ltd._ASUS_Zenbook_Duo_Keyboard-event-kbd"
-)
 
 UI_DEV_CREATE = 0x5501
 UI_DEV_DESTROY = 0x5502
@@ -169,47 +163,6 @@ def find_fn_hidraw() -> Path | None:
     return None
 
 
-def is_duo_keyboard_name(name: str) -> bool:
-    lowered = name.lower()
-    if "touchpad" in lowered or "mouse" in lowered:
-        return False
-    return "asus zenbook duo keyboard" in lowered
-
-
-def has_key_events(event: Path) -> bool:
-    try:
-        keys = (event / "device" / "capabilities" / "key").read_text().strip()
-    except OSError:
-        return False
-    return bool(keys.replace("0", "").replace(" ", ""))
-
-
-def find_keyboard_evdev() -> Path | None:
-    if USB_KBD_EVDEV.exists():
-        return USB_KBD_EVDEV
-
-    found_usb: Path | None = None
-    found_bt: Path | None = None
-    for event in sorted(Path("/sys/class/input").glob("event*")):
-        try:
-            name = (event / "device" / "name").read_text().strip()
-            vendor = int((event / "device" / "id" / "vendor").read_text().strip(), 16)
-            product = int((event / "device" / "id" / "product").read_text().strip(), 16)
-            bus = int((event / "device" / "id" / "bustype").read_text().strip(), 16)
-        except (OSError, ValueError):
-            continue
-        if vendor != USB_VENDOR or product not in ALL_PRODUCTS:
-            continue
-        if not is_duo_keyboard_name(name) or not has_key_events(event):
-            continue
-        path = Path("/dev/input") / event.name
-        if bus == BUS_USB and found_usb is None:
-            found_usb = path
-        elif bus == BUS_BLUETOOTH and found_bt is None:
-            found_bt = path
-    return found_usb or found_bt
-
-
 def load_backlight() -> int | None:
     try:
         value = int(STATE_PATH.read_text().strip())
@@ -280,13 +233,10 @@ def voxtype_record(action: str) -> None:
 
 
 class Dictation:
-    """Fn/Mic is hold-to-talk. Ctrl+Super taps start or stop."""
+    """Fn/Mic is hold-to-talk. Toggle/PTT otherwise stay Omarchy Hyprland defaults."""
 
     def __init__(self) -> None:
         self.source: str | None = None
-        self.ctrl = False
-        self.meta = False
-        self.combo_held = False
 
     def start(self, source: str) -> None:
         if self.source:
@@ -303,27 +253,6 @@ class Dictation:
         voxtype_record("stop")
         log(f"dictation stop ({self.source})")
         self.source = None
-
-    def toggle(self, source: str) -> None:
-        if self.source == source:
-            self.stop(source)
-        else:
-            self.start(source)
-
-    def on_combo_key(self, code: int, value: int) -> None:
-        if value == 2:
-            return
-        down = value != 0
-        if code == KEY_LEFTCTRL:
-            self.ctrl = down
-        elif code == KEY_LEFTMETA:
-            self.meta = down
-        else:
-            return
-        combo = self.ctrl and self.meta
-        if combo and not self.combo_held:
-            self.toggle("combo")
-        self.combo_held = combo
 
 
 class UInput:
@@ -469,45 +398,20 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput, talk: Dictation) -
     log(f"unhandled vendor usage 0x{usage:02x}: {data[:6].hex()}")
 
 
-def handle_evdev(fd: int, talk: Dictation) -> None:
-    try:
-        raw = os.read(fd, EVDEV_EVENT.size * 32)
-    except BlockingIOError:
-        return
-    if not raw:
-        raise OSError("keyboard evdev closed")
-    for offset in range(0, len(raw) // EVDEV_EVENT.size * EVDEV_EVENT.size, EVDEV_EVENT.size):
-        _sec, _usec, ev_type, code, value = EVDEV_EVENT.unpack_from(raw, offset)
-        if ev_type == EV_KEY:
-            talk.on_combo_key(code, value)
-
-
 def run_device(hidraw: Path) -> None:
     kbd = Keyboard(hidraw)
     uinput = UInput([KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP])
     talk = Dictation()
-    evdev_path = find_keyboard_evdev()
-    evdev_fd: int | None = None
-    if evdev_path is not None:
-        evdev_fd = os.open(evdev_path, os.O_RDONLY | os.O_NONBLOCK)
-        log(f"ctrl+super dictation toggle on {evdev_path}")
-    else:
-        log("no Duo keyboard evdev yet; ctrl+super dictation disabled until replug")
     try:
-        fds = [kbd.fd] if evdev_fd is None else [kbd.fd, evdev_fd]
         while True:
-            ready, _, _ = select.select(fds, [], [])
+            ready, _, _ = select.select([kbd.fd], [], [])
             if kbd.fd in ready:
                 data = os.read(kbd.fd, 64)
                 if not data:
                     raise OSError("hidraw closed")
                 handle_report(data, kbd, uinput, talk)
-            if evdev_fd is not None and evdev_fd in ready:
-                handle_evdev(evdev_fd, talk)
     finally:
         talk.stop()
-        if evdev_fd is not None:
-            os.close(evdev_fd)
         uinput.close()
         kbd.close()
 
