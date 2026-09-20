@@ -12,6 +12,7 @@ Linux does not turn the bottom OLED off when the keyboard snaps onto it. This ov
 
 - Turns **eDP-2 off** while the keyboard is snapped on over USB (`0b05:1bf2` on UX8406CA, `0b05:1b2c` on UX8406MA).
 - On detach, re-enables eDP-2 under the top panel and wakes it (DPMS, workspace, backlight). Hyprland can otherwise list the second monitor while the OLED stays black.
+- Syncs brightness from the top panel (`intel_backlight`) to the bottom OLED (`card1-eDP-2-backlight`). Omarchy's brightness keys only write the first backlight.
 - Leaves both screens on when the keyboard is used over **Bluetooth** (not covering the glass).
 - Maps each ELAN digitizer/stylus to the panel it sits on, and inhibits the bottom digitizer while the keyboard is covering it.
 - Stacks the bottom panel under the top one (`auto-down`) in dual-screen mode.
@@ -51,7 +52,7 @@ Issues on `basecamp/omarchy` are for validated bugs in Omarchy itself, not for d
 
 ```
 bin/omarchy-hw-asus-zenbook-duo   # UX8406 detector
-bin/zenbook-duo-keyboard-watch    # USB snap watcher (reloads Hyprland)
+bin/zenbook-duo-keyboard-watch    # USB snap watcher + dual-panel brightness sync
 bin/zenbook-duo-fnkeys            # USB/Bluetooth Fn-row + keyboard backlight
 bin/install-system.sh             # libinput quirks + udev hwdb/rules (root)
 config/hypr/duo.lua               # snap detection, monitors, digitizers, trackpad

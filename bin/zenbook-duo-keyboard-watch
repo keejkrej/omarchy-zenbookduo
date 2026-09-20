@@ -5,9 +5,14 @@
 # Re-enabling eDP-2 after disable can leave the panel in the layout but black:
 # DPMS stays off, no active workspace, or the eDP-2 backlight never commits.
 # After a detach we wake the output, not only reload.
+#
+# Omarchy brightness keys only write intel_backlight (eDP-1). Keep the
+# eDP-2 DRM backlight at the same percentage whenever the top panel changes.
 
 LOCK="${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-keyboard-watch.lock"
 SYNC_LOCK="${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-keyboard-sync.lock"
+BACKLIGHT_LOCK="${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-backlight.lock"
+BACKLIGHT_CLASS="${BACKLIGHT_CLASS:-/sys/class/backlight}"
 USB_VENDOR="0b05"
 BOTTOM_OUTPUT="eDP-2"
 
@@ -53,13 +58,13 @@ bottom_healthy() {
     <<<"$json" >/dev/null 2>&1 || return 1
 
   backlight=$(bottom_backlight_name) || return 0
-  actual=$(<"/sys/class/backlight/$backlight/actual_brightness")
+  actual=$(<"$BACKLIGHT_CLASS/$backlight/actual_brightness")
   [[ -n $actual && $actual -gt 0 ]]
 }
 
 backlight_name_matching() {
   local glob=$1 path
-  for path in /sys/class/backlight/$glob; do
+  for path in "$BACKLIGHT_CLASS"/$glob; do
     [[ -e $path/brightness ]] || continue
     printf '%s\n' "${path##*/}"
     return 0
@@ -72,32 +77,49 @@ bottom_backlight_name() {
 }
 
 top_backlight_name() {
-  if [[ -e /sys/class/backlight/intel_backlight/brightness ]]; then
+  if [[ -e $BACKLIGHT_CLASS/intel_backlight/brightness ]]; then
     printf '%s\n' intel_backlight
     return 0
   fi
   backlight_name_matching '*eDP-1*'
 }
 
+# Map a raw backlight reading onto another device's range. Floor at 1 so a
+# 0 write cannot leave eDP-2 in the "listed but black" state.
+scaled_brightness() {
+  local src_cur=$1 src_max=$2 dst_max=$3 dst
+  dst=$((src_cur * dst_max / src_max))
+  (( dst < 1 )) && dst=1
+  (( dst > dst_max )) && dst=$dst_max
+  printf '%s\n' "$dst"
+}
+
 set_backlight() {
   local device=$1 value=$2 path
-  brightnessctl -d "$device" set "$value" >/dev/null 2>&1 && return 0
-  path="/sys/class/backlight/$device/brightness"
+  path="$BACKLIGHT_CLASS/$device/brightness"
+  # brightnessctl talks to logind; only safe against the real sysfs tree.
+  if [[ $BACKLIGHT_CLASS == /sys/class/backlight ]]; then
+    brightnessctl -d "$device" set "$value" >/dev/null 2>&1 && return 0
+  fi
   [[ -w $path ]] || return 1
   printf '%s\n' "$value" >"$path"
 }
 
 sync_bottom_backlight() {
-  local src dst src_cur src_max dst_max dst_cur
-  src=$(top_backlight_name) || return 0
-  dst=$(bottom_backlight_name) || return 0
-  src_cur=$(<"/sys/class/backlight/$src/brightness")
-  src_max=$(<"/sys/class/backlight/$src/max_brightness")
-  dst_max=$(<"/sys/class/backlight/$dst/max_brightness")
-  [[ -n $src_cur && -n $src_max && $src_max -gt 0 && -n $dst_max && $dst_max -gt 0 ]] || return 0
-  dst_cur=$((src_cur * dst_max / src_max))
-  (( dst_cur < 1 )) && dst_cur=1
-  set_backlight "$dst" "$dst_cur" || true
+  (
+    flock 7
+    local src dst src_cur src_max dst_max dst_cur dst_now
+    src=$(top_backlight_name) || return 0
+    dst=$(bottom_backlight_name) || return 0
+    src_cur=$(<"$BACKLIGHT_CLASS/$src/brightness")
+    src_max=$(<"$BACKLIGHT_CLASS/$src/max_brightness")
+    dst_max=$(<"$BACKLIGHT_CLASS/$dst/max_brightness")
+    dst_now=$(<"$BACKLIGHT_CLASS/$dst/brightness")
+    [[ -n $src_cur && -n $src_max && $src_max -gt 0 && -n $dst_max && $dst_max -gt 0 ]] || return 0
+    dst_cur=$(scaled_brightness "$src_cur" "$src_max" "$dst_max")
+    [[ $dst_now == "$dst_cur" ]] && return 0
+    set_backlight "$dst" "$dst_cur" || log "failed to set $dst to $dst_cur"
+  ) 7>"$BACKLIGHT_LOCK"
 }
 
 ensure_bottom_workspace() {
@@ -161,6 +183,7 @@ sync_state() {
         wake_bottom
       fi
     fi
+    sync_bottom_backlight
   ) 8>"$SYNC_LOCK"
 }
 
@@ -169,19 +192,27 @@ watch() {
   flock -n 9 || exit 0
 
   sync_state
+  sync_bottom_backlight
 
   while true; do
     sleep 2
     sync_state
   done &
 
-  local monitor=(udevadm monitor --udev --subsystem-match=usb)
+  local monitor=(udevadm monitor --udev --subsystem-match=usb --subsystem-match=backlight)
   if command -v stdbuf >/dev/null; then
     monitor=(stdbuf -oL "${monitor[@]}")
   fi
 
   while read -r line; do
     case $line in
+      *'(backlight)')
+        case $line in
+          *intel_backlight* | *eDP-1*)
+            sync_bottom_backlight
+            ;;
+        esac
+        ;;
       *\ add\ * | *\ remove\ *)
         sleep 0.3
         sync_state
@@ -192,9 +223,17 @@ watch() {
 
 case "${1:-watch}" in
   sync) sync_state ;;
+  sync-backlight) sync_bottom_backlight ;;
+  scale)
+    if (( $# != 4 )); then
+      echo "Usage: $(basename "$0") scale SRC_CUR SRC_MAX DST_MAX" >&2
+      exit 2
+    fi
+    scaled_brightness "$2" "$3" "$4"
+    ;;
   watch) watch ;;
   *)
-    echo "Usage: $(basename "$0") [sync|watch]" >&2
+    echo "Usage: $(basename "$0") [sync|watch|sync-backlight|scale SRC_CUR SRC_MAX DST_MAX]" >&2
     exit 1
     ;;
 esac
