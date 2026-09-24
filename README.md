@@ -17,7 +17,7 @@ Linux does not turn the bottom OLED off when the keyboard snaps onto it. This ov
 - Maps each ELAN digitizer/stylus to the panel it sits on, and inhibits the bottom digitizer while the keyboard is covering it.
 - Stacks the bottom panel under the top one (`auto-down`) in dual-screen mode.
 - Trackpad palm rejection: treat the Duo keyboard+touchpad as a laptop combo (`AttrTPKComboLayout=below`), enable disable-while-typing, and ignore the extra relative-mouse node. The touchpad does not report contact size, so resting palms *without* typing is still limited.
-- Fn row on the USB **and Bluetooth** keyboard: media keys by default (mute / volume / brightness), hold Fn for F1–F12. Fn+Esc toggles that so F1–F12 become the default. F4 cycles keyboard backlight. Mic/F9 is hold-to-talk dictation. Emoji key opens the Omarchy emoji picker. Dictation toggle/PTT otherwise stay Omarchy defaults (Super+Ctrl+X / F9). A udev `uaccess` rule lets the user-session daemon open the vendor hidraw without membership in group `input`.
+- Fn row on the USB **and Bluetooth** keyboard: media keys by default (mute / volume / brightness), hold Fn for F1–F12. Fn+Esc toggles that so F1–F12 become the default. F4 cycles keyboard backlight. The lamp turns off when the lid closes or the machine suspends, and comes back at the same level when the lid is open again. Mic/F9 is hold-to-talk dictation. Emoji key opens the Omarchy emoji picker. Dictation toggle/PTT otherwise stay Omarchy defaults (Super+Ctrl+X / F9). A udev `uaccess` rule lets the user-session daemon open the vendor hidraw without membership in group `input`.
 
 ## Install
 

@@ -9,10 +9,15 @@ Bluetooth is 0b05:1bf3 (2025) / 0b05:1b2d (2024).
 This daemon:
   1. Sends the ASUS Fn-lock feature report so mute/volume come through as
      normal consumer keys (hold Fn for F1-F12).
-  2. Reads the remaining vendor reports and injects evdev keys Hyprland
-     already binds (brightness, mic mute).
+  2. Reads the remaining vendor reports: display brightness via Omarchy,
+     F4 cycles keyboard backlight, mic is hold-to-talk, emoji opens the
+     picker.
   3. Cycles keyboard backlight over the same HID feature report — there is
-     no asus::kbd_backlight LED on this machine.
+     no asus::kbd_backlight LED on this machine, so the kernel cannot turn
+     the lamp off when the lid closes or the machine suspends.
+  4. Turns that lamp off on lid-close and before suspend, then restores the
+     saved level when the lid is open again. A logind delay inhibitor keeps
+     suspend waiting until the off report has been sent.
 """
 
 from __future__ import annotations
@@ -21,7 +26,6 @@ import array
 import fcntl
 import os
 import select
-import struct
 import subprocess
 import sys
 import time
@@ -54,25 +58,14 @@ BACKLIGHT = {
 USAGE_RELEASE = 0x00
 USAGE_BRIGHTNESS_DOWN = 0x10
 USAGE_BRIGHTNESS_UP = 0x20
+USAGE_BATTERY = 0x3D
 USAGE_FNLOCK = 0x4E
 USAGE_MICMUTE = 0x7C
 USAGE_EMOJI = 0x7E
 USAGE_BACKLIGHT = 0xC7
 
-KEY_BRIGHTNESSDOWN = 224
-KEY_BRIGHTNESSUP = 225
-
-EV_SYN = 0
-EV_KEY = 1
-SYN_REPORT = 0
 BUS_USB = 0x03
 BUS_BLUETOOTH = 0x05
-
-UI_DEV_CREATE = 0x5501
-UI_DEV_DESTROY = 0x5502
-UI_DEV_SETUP = 0x405C5503  # _IOW('U', 3, struct uinput_setup) size 0x5c
-UI_SET_EVBIT = 0x40045564
-UI_SET_KEYBIT = 0x40045565
 
 LOCK_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "zenbook-duo-fnkeys.lock"
 STATE_DIR = (
@@ -232,6 +225,19 @@ def voxtype_record(action: str) -> None:
         log(f"voxtype record {action}: {exc}")
 
 
+def brightness_step(direction: str) -> None:
+    arg = "+5%" if direction == "up" else "5%-"
+    try:
+        subprocess.Popen(
+            ["omarchy-brightness-display", arg],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        log(f"brightness {direction}: {exc}")
+
+
 class Dictation:
     """Fn/Mic is hold-to-talk. Toggle/PTT otherwise stay Omarchy Hyprland defaults."""
 
@@ -255,60 +261,6 @@ class Dictation:
         self.source = None
 
 
-class UInput:
-    def __init__(self, keys: list[int]) -> None:
-        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
-        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
-        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_SYN)
-        for key in keys:
-            fcntl.ioctl(self.fd, UI_SET_KEYBIT, key)
-        setup = struct.pack(
-            "@HHHH80sI",
-            BUS_USB,
-            USB_VENDOR,
-            0x1BF2,
-            1,
-            b"Zenbook Duo Fn keys",
-            0,
-        )
-        fcntl.ioctl(self.fd, UI_DEV_SETUP, setup)
-        fcntl.ioctl(self.fd, UI_DEV_CREATE)
-        time.sleep(0.05)
-        self.pressed: list[int] = []
-
-    def _emit(self, ev_type: int, code: int, value: int) -> None:
-        now = time.time()
-        sec = int(now)
-        usec = int((now - sec) * 1_000_000)
-        os.write(self.fd, struct.pack("@llHHi", sec, usec, ev_type, code, value))
-
-    def press(self, *keys: int) -> None:
-        self.release_all()
-        for key in keys:
-            self._emit(EV_KEY, key, 1)
-            self.pressed.append(key)
-        self._emit(EV_SYN, SYN_REPORT, 0)
-
-    def tap(self, *keys: int) -> None:
-        self.press(*keys)
-        self.release_all()
-
-    def release_all(self) -> None:
-        if not self.pressed:
-            return
-        for key in reversed(self.pressed):
-            self._emit(EV_KEY, key, 0)
-        self.pressed.clear()
-        self._emit(EV_SYN, SYN_REPORT, 0)
-
-    def close(self) -> None:
-        try:
-            self.release_all()
-            fcntl.ioctl(self.fd, UI_DEV_DESTROY)
-        finally:
-            os.close(self.fd)
-
-
 def bus_label(path: Path) -> str:
     info = hid_info(path)
     if not info:
@@ -319,32 +271,73 @@ def bus_label(path: Path) -> str:
 
 
 class Keyboard:
-    def __init__(self, hidraw: Path) -> None:
+    def __init__(self, hidraw: Path, *, lid_closed: bool = False, sleeping: bool = False) -> None:
         self.path = hidraw
         self.fd = os.open(hidraw, os.O_RDWR)
         saved = load_backlight()
+        self._have_level = saved is not None
         self.backlight = 0 if saved is None else saved
+        self.lid_closed = lid_closed
+        self.sleeping = sleeping
+        self._lamp: int | None = None
+        self._blanked = False
         self.fn_lock = load_fnlock()
         self._feature(ASUS_HANDSHAKE, "asus handshake")
         self._feature(FNLOCK_REPORT[self.fn_lock], "fn-lock")
-        if saved is not None:
-            self._feature(BACKLIGHT[self.backlight], "backlight")
+        self._apply_lamp()
+        held = ""
+        if self.lid_closed:
+            held = ", off while the lid is closed"
+        elif self.sleeping:
+            held = ", off for suspend"
         log(
             f"initialized {hidraw} ({bus_label(hidraw)}, "
             f"fn-lock {'on' if self.fn_lock else 'off'}, "
-            f"backlight {self.backlight})"
+            f"backlight {self.backlight}{held})"
         )
 
     def _feature(self, report: bytes, what: str) -> None:
+        if self.fd < 0:
+            return
         try:
             hid_set_feature(self.fd, report)
         except OSError as exc:
             log(f"{what} failed on {self.path}: {exc}")
 
+    def _apply_lamp(self) -> None:
+        """Write the lamp level. Lid-closed and suspend force 0 and do not save it."""
+        if self.fd < 0:
+            return
+        blank = self.lid_closed or self.sleeping
+        if not blank and not self._have_level:
+            return
+        level = 0 if blank else self.backlight
+        if self._lamp == level:
+            return
+        try:
+            hid_set_feature(self.fd, BACKLIGHT[level])
+        except OSError as exc:
+            log(f"backlight failed on {self.path}: {exc}")
+            return
+        was_blanked = self._blanked
+        self._lamp = level
+        self._blanked = blank
+        if blank and not was_blanked and self.backlight != 0:
+            why = "lid closed" if self.lid_closed else "sleep"
+            log(f"keyboard backlight off ({why})")
+        elif was_blanked and not blank:
+            log(f"keyboard backlight {level}")
+
+    def set_power_state(self, lid_closed: bool, sleeping: bool) -> None:
+        self.lid_closed = lid_closed
+        self.sleeping = sleeping
+        self._apply_lamp()
+
     def set_backlight(self, level: int) -> None:
         self.backlight = max(0, min(3, level))
-        hid_set_feature(self.fd, BACKLIGHT[self.backlight])
+        self._have_level = True
         save_backlight(self.backlight)
+        self._apply_lamp()
         osd_keyboard(self.backlight)
         log(f"keyboard backlight {self.backlight}")
 
@@ -366,16 +359,20 @@ class Keyboard:
         self.set_fn_lock(not self.fn_lock)
 
     def close(self) -> None:
-        os.close(self.fd)
+        fd = self.fd
+        self.fd = -1
+        if fd >= 0:
+            os.close(fd)
 
 
-def handle_report(data: bytes, kbd: Keyboard, uinput: UInput, talk: Dictation) -> None:
+def handle_report(data: bytes, kbd: Keyboard, talk: Dictation) -> None:
     if len(data) < 2 or data[0] != 0x5A:
         return
     usage = data[1]
     if usage == USAGE_RELEASE:
-        uinput.release_all()
         talk.stop("fn9")
+        return
+    if usage == USAGE_BATTERY:
         return
     if usage == USAGE_FNLOCK:
         kbd.toggle_fn_lock()
@@ -384,10 +381,10 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput, talk: Dictation) -
         kbd.cycle_backlight()
         return
     if usage == USAGE_BRIGHTNESS_DOWN:
-        uinput.press(KEY_BRIGHTNESSDOWN)
+        brightness_step("down")
         return
     if usage == USAGE_BRIGHTNESS_UP:
-        uinput.press(KEY_BRIGHTNESSUP)
+        brightness_step("up")
         return
     if usage == USAGE_MICMUTE:
         talk.start("fn9")
@@ -398,9 +395,161 @@ def handle_report(data: bytes, kbd: Keyboard, uinput: UInput, talk: Dictation) -
     log(f"unhandled vendor usage 0x{usage:02x}: {data[:6].hex()}")
 
 
-def run_device(hidraw: Path) -> None:
-    kbd = Keyboard(hidraw)
-    uinput = UInput([KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP])
+class PowerEvents:
+    """Lid and suspend state from logind. Blank the lamp before releasing the sleep lock."""
+
+    def __init__(self) -> None:
+        self.lid_closed = False
+        self.sleeping = False
+        self._kbd: Keyboard | None = None
+        self._inhibit_fd: int | None = None
+        self._bus: object | None = None
+        self._defer_inhibit = False
+        self.on_settle = None
+
+    def snapshot(self) -> tuple[bool, bool]:
+        return self.lid_closed, self.sleeping
+
+    def bind(self, kbd: Keyboard) -> None:
+        self._kbd = kbd
+        self._push()
+
+    def unbind(self, kbd: Keyboard) -> None:
+        if self._kbd is kbd:
+            self._kbd = None
+
+    def _push(self) -> None:
+        if self._kbd is not None:
+            self._kbd.set_power_state(self.lid_closed, self.sleeping)
+
+    def note_lid(self, closed: bool) -> None:
+        closed = bool(closed)
+        if closed == self.lid_closed:
+            return
+        self.lid_closed = closed
+        log("lid closed" if closed else "lid opened")
+        self._push()
+
+    def note_sleep(self, sleeping: bool) -> None:
+        sleeping = bool(sleeping)
+        changed = sleeping != self.sleeping
+        self.sleeping = sleeping
+        if sleeping:
+            if changed:
+                log("suspending")
+                # Blank first, then drop the delay lock so suspend can proceed.
+                self._push()
+            self._release_inhibit()
+            return
+        if not changed:
+            return
+        log("resumed")
+        # PrepareForSleep can arrive before the lid-open signal, and the open
+        # signal itself is easy to miss across freeze. Re-read logind after
+        # this handler returns so a blocking property read cannot deadlock.
+        if self._defer_inhibit:
+            from gi.repository import GLib
+
+            GLib.idle_add(self._after_resume)
+            return
+        self._after_resume()
+
+    def _after_resume(self) -> bool:
+        self._refresh_lid()
+        if self.on_settle is not None:
+            self.on_settle()
+        self._push()
+        self._take_inhibit()
+        return False
+
+    def _refresh_lid(self) -> None:
+        queried = self._query_lid()
+        if queried is None or queried == self.lid_closed:
+            return
+        self.lid_closed = queried
+        log("lid closed" if queried else "lid opened")
+
+    def _query_lid(self) -> bool | None:
+        bus = self._bus
+        if bus is None:
+            return None
+        try:
+            import dbus
+
+            proxy = bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+            props = dbus.Interface(proxy, "org.freedesktop.DBus.Properties")
+            return bool(props.Get("org.freedesktop.login1.Manager", "LidClosed"))
+        except Exception as exc:
+            log(f"lid state: {exc}")
+            return None
+
+    def _take_inhibit(self) -> None:
+        bus = self._bus
+        if bus is None or self._inhibit_fd is not None:
+            return
+        try:
+            proxy = bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+            wrapped = proxy.Inhibit(
+                "sleep",
+                "zenbook-duo-fnkeys",
+                "Turn keyboard backlight off",
+                "delay",
+                dbus_interface="org.freedesktop.login1.Manager",
+            )
+            self._inhibit_fd = wrapped.take()
+        except Exception as exc:
+            log(f"sleep inhibit: {exc}")
+
+    def _release_inhibit(self) -> None:
+        fd = self._inhibit_fd
+        self._inhibit_fd = None
+        if fd is None:
+            return
+        try:
+            os.close(fd)
+        except OSError as exc:
+            log(f"sleep inhibit release: {exc}")
+
+    def attach(self, bus: object) -> None:
+        self._bus = bus
+        self._defer_inhibit = True
+        queried = self._query_lid()
+        if queried is not None:
+            self.lid_closed = queried
+        log("lid closed" if self.lid_closed else "lid open")
+        bus.add_signal_receiver(  # type: ignore[attr-defined]
+            self._on_properties,
+            signal_name="PropertiesChanged",
+            dbus_interface="org.freedesktop.DBus.Properties",
+            path="/org/freedesktop/login1",
+        )
+        bus.add_signal_receiver(  # type: ignore[attr-defined]
+            self._on_prepare,
+            signal_name="PrepareForSleep",
+            dbus_interface="org.freedesktop.login1.Manager",
+            path="/org/freedesktop/login1",
+        )
+        self._take_inhibit()
+
+    def _on_properties(self, interface: str, changed: dict, _invalidated: list) -> None:
+        if str(interface) != "org.freedesktop.login1.Manager":
+            return
+        if "LidClosed" not in changed:
+            return
+        self.note_lid(bool(changed["LidClosed"]))
+
+    def _on_prepare(self, active: bool) -> None:
+        self.note_sleep(bool(active))
+
+
+def run_device(hidraw: Path, power: PowerEvents | None = None) -> None:
+    lid_closed = False
+    sleeping = False
+    if power is not None:
+        lid_closed, sleeping = power.snapshot()
+    kbd = Keyboard(hidraw, lid_closed=lid_closed, sleeping=sleeping)
+    if power is not None:
+        power.bind(kbd)
     talk = Dictation()
     try:
         while True:
@@ -409,10 +558,11 @@ def run_device(hidraw: Path) -> None:
                 data = os.read(kbd.fd, 64)
                 if not data:
                     raise OSError("hidraw closed")
-                handle_report(data, kbd, uinput, talk)
+                handle_report(data, kbd, talk)
     finally:
+        if power is not None:
+            power.unbind(kbd)
         talk.stop()
-        uinput.close()
         kbd.close()
 
 
@@ -427,9 +577,7 @@ def acquire_lock() -> int:
     return fd
 
 
-def watch() -> None:
-    acquire_lock()
-    log("watching for Zenbook Duo USB/Bluetooth keyboard")
+def _watch_blocking() -> None:
     denied_logged = False
     while True:
         hidraw = find_fn_hidraw()
@@ -442,14 +590,121 @@ def watch() -> None:
         except PermissionError as exc:
             if not denied_logged:
                 log(
-                    f"{hidraw}: {exc} — Bluetooth hidraw needs the Duo udev rule "
-                    "(sudo bin/install-system.sh)"
+                    f"{hidraw}: {exc} — Duo hidraw needs the overlay udev rule "
+                    "with TAG+=uaccess (sudo bin/install-system.sh)"
                 )
                 denied_logged = True
-        except (OSError, struct.error, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             log(f"{hidraw}: {exc}")
             denied_logged = False
         time.sleep(1.0)
+
+
+def _watch_with_lid() -> None:
+    from dbus.mainloop.glib import DBusGMainLoop
+    from gi.repository import GLib
+    import dbus
+
+    DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    power = PowerEvents()
+    holder: dict[str, object] = {"kbd": None, "talk": None}
+    denied = {"logged": False}
+
+    def drop_device(reason: str) -> bool:
+        kbd = holder["kbd"]
+        talk = holder["talk"]
+        if not isinstance(kbd, Keyboard):
+            return False
+        holder["kbd"] = None
+        holder["talk"] = None
+        if isinstance(talk, Dictation):
+            talk.stop()
+        power.unbind(kbd)
+        log(f"{kbd.path}: {reason}")
+        kbd.close()
+        return False
+
+    def on_hid(_fd: int, cond: int) -> bool:
+        kbd = holder["kbd"]
+        talk = holder["talk"]
+        if not isinstance(kbd, Keyboard) or not isinstance(talk, Dictation):
+            return False
+        if cond & GLib.IO_IN:
+            try:
+                data = os.read(kbd.fd, 64)
+            except BlockingIOError:
+                return True
+            except OSError as exc:
+                GLib.idle_add(drop_device, str(exc))
+                return False
+            if not data:
+                GLib.idle_add(drop_device, "hidraw closed")
+                return False
+            try:
+                handle_report(data, kbd, talk)
+            except OSError as exc:
+                GLib.idle_add(drop_device, str(exc))
+                return False
+        if cond & (GLib.IO_HUP | GLib.IO_ERR):
+            GLib.idle_add(drop_device, "hidraw closed")
+            return False
+        return True
+
+    def ensure_device() -> bool:
+        if isinstance(holder["kbd"], Keyboard):
+            return True
+        hidraw = find_fn_hidraw()
+        if hidraw is None:
+            return True
+        try:
+            lid_closed, sleeping = power.snapshot()
+            kbd = Keyboard(hidraw, lid_closed=lid_closed, sleeping=sleeping)
+        except PermissionError as exc:
+            if not denied["logged"]:
+                log(
+                    f"{hidraw}: {exc} — Duo hidraw needs the overlay udev rule "
+                    "with TAG+=uaccess (sudo bin/install-system.sh)"
+                )
+                denied["logged"] = True
+            return True
+        except (OSError, ValueError) as exc:
+            log(f"{hidraw}: {exc}")
+            return True
+        denied["logged"] = False
+        talk = Dictation()
+        holder["kbd"] = kbd
+        holder["talk"] = talk
+        power.bind(kbd)
+        GLib.io_add_watch(kbd.fd, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, on_hid)
+        return True
+
+    power.on_settle = ensure_device
+    try:
+        power.attach(bus)
+        GLib.timeout_add(1500, ensure_device)
+        ensure_device()
+        GLib.MainLoop().run()
+    finally:
+        power._release_inhibit()
+
+
+def watch() -> None:
+    acquire_lock()
+    log("watching for Zenbook Duo USB/Bluetooth keyboard")
+    while True:
+        try:
+            _watch_with_lid()
+        except ImportError as exc:
+            log(f"python dbus/gi missing ({exc}); lid will not blank the keyboard backlight")
+            _watch_blocking()
+            return
+        except Exception as exc:
+            log(f"lid watch failed ({exc}); retrying")
+            time.sleep(1)
+            continue
+        log("lid watch stopped; retrying")
+        time.sleep(1)
 
 
 def init_only() -> int:
