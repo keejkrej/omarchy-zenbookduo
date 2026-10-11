@@ -28,8 +28,14 @@ end
 
 -- Top panel eDP-1, bottom panel eDP-2 stacked underneath when the keyboard
 -- is off the glass. Disable eDP-2 while the keyboard is snapped on.
-function M.apply_monitors(scale)
-  hl.monitor({ output = "eDP-1", mode = "preferred", position = "0x0", scale = scale })
+-- layout.top and layout.bottom are logical-pixel positions. Defaults keep
+-- the pair at the origin, with the bottom panel directly underneath.
+function M.apply_monitors(scale, layout)
+  layout = layout or {}
+  local top_pos = layout.top or "0x0"
+  local bottom_pos = layout.bottom or "auto-down"
+
+  hl.monitor({ output = "eDP-1", mode = "preferred", position = top_pos, scale = scale })
 
   if M.keyboard_snapped() then
     hl.monitor({ output = "eDP-2", disabled = true })
@@ -39,7 +45,7 @@ function M.apply_monitors(scale)
     hl.monitor({
       output = "eDP-2",
       mode = "preferred",
-      position = "auto-down",
+      position = bottom_pos,
       scale = scale,
       disabled = false,
     })
