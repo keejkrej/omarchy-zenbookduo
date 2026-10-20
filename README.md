@@ -46,7 +46,7 @@ The greeter puts a login view on every screen; with the keyboard snapped on, key
 
 `sudo bin/zenbook-duo-faceid setup`, then `sudo bin/zenbook-duo-faceid enroll $USER`, with `howdy-next` from the AUR. It finds the IR camera (the greyscale-only capture node; its emitter strobes without `linux-enable-ir-emitter`) and adds Howdy to sudo, polkit, SDDM and the Omarchy lock screen, backing up each PAM file. The lock screen only starts its automatic stack (`omarchy-lock-fingerprint`) when `fprintd-list` mentions a finger, and retries 250 ms after a failure, so a `/usr/local/bin/fprintd-list` wrapper reports the Howdy stack and a gate skips the camera while the panels are blanked. `sudo bin/zenbook-duo-faceid remove` restores every PAM file. Not run by `install.sh`.
 
-Rotation, sharing mode, auto-brightness, the on-screen keyboard and the bar filter are adapted from [scrambletoolsllc/zenbook-duo-omarchy](https://github.com/scrambletoolsllc/zenbook-duo-omarchy) (UX8407AA, MIT); the face unlock idea is from [laithm/zenbook-duo-hyprland](https://github.com/laithm/zenbook-duo-hyprland).
+Rotation, sharing mode, auto-brightness, the on-screen keyboard and the bar filter are adapted from [scrambletoolsllc/zenbook-duo-omarchy](https://github.com/scrambletoolsllc/zenbook-duo-omarchy) (UX8407AA, MIT, see `LICENSE.zenbook-duo-omarchy`); the face unlock idea is from [laithm/zenbook-duo-hyprland](https://github.com/laithm/zenbook-duo-hyprland).
 
 ## Install
 
