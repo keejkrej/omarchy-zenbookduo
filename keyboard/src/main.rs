@@ -1003,15 +1003,12 @@ fn main() -> Result<(), iced_layershell::Error> {
         std::thread::sleep(std::time::Duration::from_millis(500));
         return Ok(());
     }
-    // Software rendering: the deck is flat shapes and text, and skipping the
-    // GPU renderer keeps start-up quick and memory low.
+    // GPU rendering (wgpu), with tiny-skia as the fallback iced picks when
+    // wgpu cannot start. tiny-skia redraws the whole ~5 Mpx panel on the CPU
+    // for every key press, about 280 ms here, which made typing lag.
     announce(true);
     theme::load();
     let gaps = theme::frame().gaps;
-    if std::env::var_os("ICED_BACKEND").is_none() {
-        // SAFETY: no other threads exist yet.
-        unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
-    }
     iced_layershell::application(Keyboard::new, namespace, Keyboard::update, Keyboard::view)
         .subscription(Keyboard::subscription)
         // Transparent outside the framed deck (rounded corners).

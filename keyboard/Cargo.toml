@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 # Layer-shell surface: takes touch and pointer input but never keyboard focus.
 iced_layershell = { version = "0.19", default-features = false }
-iced = { version = "0.14", default-features = false, features = ["tiny-skia", "wayland", "crisp", "smol", "canvas"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "wayland", "crisp", "smol", "canvas"] }
 # Virtual keyboard (zwp_virtual_keyboard_v1) and pointer (zwlr_virtual_pointer_v1)
 # on one persistent connection: no process per key.
 wayland-client = "0.31"
