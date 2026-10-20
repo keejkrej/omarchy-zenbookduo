@@ -21,6 +21,10 @@ udevadm trigger --subsystem-match=input --action=add
 udevadm trigger --subsystem-match=hidraw --action=add
 udevadm trigger --subsystem-match=hidraw --action=change
 
+# SDDM greeter on the top panel only.
+install -D -m 644 "$REPO/config/sddm/hyprland.lua" /etc/sddm/zenbook-duo-hyprland.lua
+install -m 644 "$REPO/config/sddm/zz-zenbook-duo.conf" /etc/sddm.conf.d/zz-zenbook-duo.conf
+
 # Root daemon that turns the two halves' accelerometers into a hinge angle.
 # A copy, not a link into the user's checkout, since it runs as root.
 install -D -m 755 "$REPO/bin/zenbook-duo-hinge" /usr/local/lib/omarchy-zenbookduo/zenbook-duo-hinge
