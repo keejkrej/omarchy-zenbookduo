@@ -1,0 +1,126 @@
+#!/bin/bash
+# Face unlock with Howdy Next and the UX8406's IR camera, for sudo, polkit
+# prompts, the Omarchy lock screen and SDDM. Run as root.
+#
+#   zenbook-duo-faceid setup     configure the camera and wire PAM
+#   zenbook-duo-faceid enroll U  add a face model for user U
+#   zenbook-duo-faceid remove    put every PAM file back
+#
+# The IR emitter works without linux-enable-ir-emitter: the camera strobes
+# it on alternate frames, which Howdy's dark-frame filter expects.
+#
+# The lock screen runs its fingerprint PAM stack (omarchy-lock-fingerprint)
+# as soon as it locks and again 250 ms after every failure, but only when
+# `fprintd-list $USER` mentions a finger. /usr/local/bin/fprintd-list wraps
+# the real one and adds a line while that stack uses Howdy. A gate skips the
+# camera while the screens are blanked, so the IR camera is not left running
+# all through a long lock.
+
+set -euo pipefail
+
+[[ $EUID -eq 0 ]] || { echo "zenbook-duo-faceid must run as root" >&2; exit 1; }
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+LIB=/usr/local/lib/omarchy-zenbookduo
+GATE=$LIB/zenbook-duo-faceid-gate
+SHIM=/usr/local/bin/fprintd-list
+BAK=.zenbook-duo.bak
+HOWDY="auth      sufficient                  pam_howdy.so"
+LOCK_PAM=/etc/pam.d/omarchy-lock-fingerprint
+
+backup() {
+  local file=$1
+  [[ -e $file.zenbook-duo.none || -e $file$BAK ]] && return 0
+  if [[ -e $file ]]; then cp -a "$file" "$file$BAK"; else : >"$file.zenbook-duo.none"; fi
+}
+
+restore() {
+  local file=$1
+  if [[ -e $file$BAK ]]; then
+    mv "$file$BAK" "$file"
+    echo "Restored $file"
+  elif [[ -e $file.zenbook-duo.none ]]; then
+    rm -f "$file" "$file.zenbook-duo.none"
+    echo "Removed $file"
+  fi
+}
+
+# Put `line` first in a PAM file's auth stack, once.
+prepend() {
+  local file=$1 line=$2
+  grep -q pam_howdy "$file" && return 0
+  backup "$file"
+  sed -i "0,/^-\?auth/s||$line\n&|" "$file"
+  echo "Howdy added to $file"
+}
+
+# The IR camera by a stable by-path name: the capture node whose only
+# format is 8-bit greyscale. /dev/videoN numbers change between boots.
+ir_camera() {
+  local dev
+  for dev in /dev/v4l/by-path/*-video-index0; do
+    [[ $(v4l2-ctl -d "$dev" --list-formats 2>/dev/null | grep -c "'") == 1 ]] || continue
+    v4l2-ctl -d "$dev" --list-formats 2>/dev/null | grep -q "'GREY'" && { echo "$dev"; return 0; }
+  done
+  return 1
+}
+
+setup() {
+  command -v v4l2-ctl >/dev/null || { echo "v4l2-ctl not found: pacman -S v4l-utils" >&2; exit 1; }
+  local camera
+  camera=$(ir_camera) || { echo "No IR camera found" >&2; exit 1; }
+  echo "IR camera: $camera"
+  howdy set device_path "$camera" >/dev/null
+  howdy download-models
+
+  install -D -m 755 "$REPO/bin/zenbook-duo-faceid-gate" "$GATE"
+  install -D -m 755 "$REPO/bin/fprintd-list-howdy" "$SHIM"
+
+  # sudo: face runs alongside the terminal password prompt and ends it.
+  prepend /etc/pam.d/sudo "auth      sufficient                  pam_howdy.so workaround=native"
+
+  # polkit (pkexec, graphical prompts): face first, then the password. No
+  # Enter injection: it could land in whatever window has focus.
+  if [[ ! -e /etc/pam.d/polkit-1 ]]; then
+    backup /etc/pam.d/polkit-1
+    cp /usr/lib/pam.d/polkit-1 /etc/pam.d/polkit-1
+  fi
+  prepend /etc/pam.d/polkit-1 "$HOWDY"
+
+  # SDDM after a logout (boot uses autologin): face, then the password.
+  prepend /etc/pam.d/sddm "$HOWDY"
+
+  # Lock screen: its automatic stack, face only, skipped while blanked.
+  backup "$LOCK_PAM"
+  cat >"$LOCK_PAM" <<EOF
+#%PAM-1.0
+auth       [success=1 default=ignore]  pam_exec.so quiet $GATE
+auth       sufficient                  pam_howdy.so
+auth       required                    pam_deny.so
+account    include                     system-local-login
+EOF
+  echo "Lock screen face unlock in $LOCK_PAM"
+}
+
+enroll() {
+  local user=${1:?usage: zenbook-duo-faceid enroll USER}
+  echo "Look at the camera."
+  howdy -U "$user" -y --plain add "$(hostname)-$(date +%Y%m%d)"
+  howdy -U "$user" list
+}
+
+remove() {
+  local file
+  for file in /etc/pam.d/sudo /etc/pam.d/polkit-1 /etc/pam.d/sddm "$LOCK_PAM"; do
+    restore "$file"
+  done
+  rm -f "$GATE" "$SHIM"
+  echo "Face unlock removed. Howdy and its face models were left installed."
+}
+
+case "${1:-}" in
+  setup) setup ;;
+  enroll) enroll "${2:-}" ;;
+  remove) remove ;;
+  *) echo "usage: zenbook-duo-faceid setup | enroll USER | remove" >&2; exit 2 ;;
+esac

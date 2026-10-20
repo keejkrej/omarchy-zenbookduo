@@ -1,0 +1,11 @@
+[Unit]
+Description=Zenbook Duo hinge angle from the lid and base accelerometers
+After=systemd-udev-settle.service
+
+[Service]
+ExecStart=/usr/local/lib/omarchy-zenbookduo/zenbook-duo-hinge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

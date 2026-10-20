@@ -13,3 +13,8 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1b2c", MODE="06
 
 SUBSYSTEM=="hidraw", KERNELS=="0005:0B05:1BF3.*", MODE="0660", TAG+="uaccess"
 SUBSYSTEM=="hidraw", KERNELS=="0005:0B05:1B2D.*", MODE="0660", TAG+="uaccess"
+
+# Keyboard lifted off the bottom panel (pogo-pin USB gone): reset that
+# panel's touch controller so it recalibrates with the glass clear. Give
+# the hand that lifted the keyboard two seconds to leave the screen.
+ACTION=="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{PRODUCT}=="b05/1b2c/*|b05/1bf2/*", RUN+="/usr/bin/systemd-run --no-block --on-active=2 --unit=zenbook-duo-touch-reset /usr/local/lib/omarchy-zenbookduo/zenbook-duo-touch-reset"

@@ -1,0 +1,23 @@
+#!/bin/bash
+# Reset the bottom panel's touch controller once the keyboard is lifted off.
+#
+# The capacitive panel sets its no-touch baseline while the magnetic
+# keyboard lies on it, and then needs a hard press to register a touch.
+# Rebinding i2c-hid restarts the controller, which measures the baseline
+# again with the glass clear. Run as root, a few seconds after undocking,
+# from the udev rule in 61-omarchy-zenbookduo.rules. Hyprland applies the
+# hypr.duo device rules to the controller when it comes back.
+
+DRIVER=/sys/bus/i2c/drivers/i2c_hid_acpi
+DEVICE=i2c-ELAN9009:00 # bottom panel (eDP-2) on UX8406MA and UX8406CA
+
+[[ -e /sys/bus/i2c/devices/$DEVICE ]] || exit 0
+# Docked again in the meantime: the baseline would be wrong once more.
+for d in /sys/bus/usb/devices/*; do
+  [[ $(<"$d/idVendor") == 0b05 ]] 2>/dev/null || continue
+  case $(<"$d/idProduct") in 1bf2 | 1b2c) exit 0 ;; esac
+done 2>/dev/null
+
+[[ -e $DRIVER/$DEVICE ]] && echo "$DEVICE" >"$DRIVER/unbind"
+sleep 0.5
+echo "$DEVICE" >"$DRIVER/bind"

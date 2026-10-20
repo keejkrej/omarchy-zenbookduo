@@ -26,16 +26,71 @@ function M.keyboard_snapped()
   return out:find("1", 1, true) ~= nil
 end
 
+local function state_path(name)
+  local base = os.getenv("XDG_STATE_HOME") or (os.getenv("HOME") .. "/.local/state")
+  return base .. "/zenbook/" .. name
+end
+
+-- Device orientation written by zenbook-duo-rotate-watch (normal, bottom-up,
+-- left-up, right-up as iio-sensor-proxy names them, or sharing).
+function M.orientation()
+  local f = io.open(state_path("rotation"), "r")
+  if not f then
+    return "normal"
+  end
+  local value = (f:read("*l") or "normal"):match("^%s*(.-)%s*$")
+  f:close()
+  return value
+end
+
+-- True while the on-screen keyboard (zenbook-duo-keyboard) is running. It
+-- writes its pid; a dead pid left behind by pkill does not count.
+function M.osk_up()
+  local f = io.open(state_path("osk.pid"), "r")
+  if not f then
+    return false
+  end
+  local pid = (f:read("*l") or ""):match("%d+")
+  f:close()
+  -- Check the command line, not comm: comm is cut to 15 characters, which
+  -- zenbook-duo-keyboard-watch shares.
+  local cmdline = pid and io.open("/proc/" .. pid .. "/cmdline", "r")
+  if not cmdline then
+    return false
+  end
+  local argv0 = (cmdline:read("*a") or ""):match("^[^%z]*")
+  cmdline:close()
+  return argv0:match("zenbook%-duo%-keyboard$") ~= nil
+end
+
+-- Panel transforms for the current orientation, read by apply_devices so
+-- touch input turns with its panel.
+M.transform_top, M.transform_bottom = 0, 0
+
 -- Top panel eDP-1, bottom panel eDP-2 stacked underneath when the keyboard
 -- is off the glass. Disable eDP-2 while the keyboard is snapped on.
 -- layout.top and layout.bottom are logical-pixel positions. Defaults keep
--- the pair at the origin, with the bottom panel directly underneath.
+-- the pair at the origin, with the bottom panel directly underneath. When
+-- the device is rotated, the rotated layout replaces those positions.
+-- While the on-screen keyboard is up, a 100 px gap keeps the cursor off the
+-- bottom panel and workspace 2 is not pinned to it.
 function M.apply_monitors(scale, layout)
   layout = layout or {}
-  local top_pos = layout.top or "0x0"
-  local bottom_pos = layout.bottom or "auto-down"
+  local h = math.floor(1800 / scale) -- panel height; also the width once rotated
+  local gap = M.osk_up() and 100 or 0
+  local off = h + gap
+  local layouts = {
+    ["normal"] = { 0, layout.top or "0x0", 0, gap == 0 and layout.bottom or ("0x" .. off) },
+    ["bottom-up"] = { 2, "0x" .. off, 2, "0x0" },
+    ["left-up"] = { 1, off .. "x0", 1, "0x0" },
+    ["right-up"] = { 3, "0x0", 3, off .. "x0" },
+    -- Opened flat on a table: turn only the top panel for the person opposite.
+    ["sharing"] = { 2, "0x0", 0, "0x" .. off },
+  }
+  local l = layouts[M.orientation()] or layouts["normal"]
+  M.transform_top, M.transform_bottom = l[1], l[3]
 
-  hl.monitor({ output = "eDP-1", mode = "preferred", position = top_pos, scale = scale })
+  hl.monitor({ output = "eDP-1", mode = "preferred", position = l[2], scale = scale, transform = l[1] })
 
   if M.keyboard_snapped() then
     hl.monitor({ output = "eDP-2", disabled = true })
@@ -45,11 +100,14 @@ function M.apply_monitors(scale, layout)
     hl.monitor({
       output = "eDP-2",
       mode = "preferred",
-      position = bottom_pos,
+      position = l[4] or "auto-down",
       scale = scale,
+      transform = l[3],
       disabled = false,
     })
-    hl.workspace_rule({ workspace = "2", monitor = "eDP-2", default = true })
+    if gap == 0 then
+      hl.workspace_rule({ workspace = "2", monitor = "eDP-2", default = true })
+    end
   end
 end
 
@@ -72,6 +130,7 @@ function M.apply_devices()
         name = panel.prefix .. suffix,
         output = panel.output,
         enabled = enabled,
+        transform = panel.output == "eDP-1" and M.transform_top or M.transform_bottom,
       })
     end
   end
@@ -87,6 +146,11 @@ function M.apply_input()
       touchpad = {
         disable_while_typing = true,
       },
+    },
+    -- The on-screen touchpad is a touchscreen; hiding the cursor on touch
+    -- would make it vanish whenever the touchpad is used.
+    cursor = {
+      hide_on_touch = false,
     },
   })
 

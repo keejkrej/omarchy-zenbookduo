@@ -15,6 +15,7 @@ BACKLIGHT_LOCK="${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-backlight.lock"
 BACKLIGHT_CLASS="${BACKLIGHT_CLASS:-/sys/class/backlight}"
 USB_VENDOR="0b05"
 BOTTOM_OUTPUT="eDP-2"
+OSK="$HOME/.config/zenbook/zenbook-duo-osk"
 
 log() {
   printf '%s\n' "$*"
@@ -170,6 +171,11 @@ sync_state() {
     if (( attached )); then
       if bottom_enabled; then
         log "keyboard snapped on: disable $BOTTOM_OUTPUT"
+        # The on-screen keyboard has nowhere to go; closing it also moves its
+        # parked workspaces back before the panel goes away.
+        if pgrep -f 'zenbook/zenbook-duo-keyboard$' >/dev/null && [[ -x $OSK ]]; then
+          "$OSK" close
+        fi
         hyprctl reload >/dev/null 2>&1 || true
       fi
     else

@@ -1,0 +1,12 @@
+[Unit]
+Description=Zenbook Duo auto-rotation from the accelerometer
+After=graphical-session.target iio-sensor-proxy.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.config/zenbook/zenbook-duo-rotate-watch
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
