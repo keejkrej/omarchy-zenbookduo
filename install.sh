@@ -80,6 +80,15 @@ else
   echo "Auto-rotation and auto-brightness need iio-sensor-proxy: sudo pacman -S iio-sensor-proxy, then re-run" >&2
 fi
 
+# Bar only on the screen with workspace 1; rebuilt after every omarchy update.
+HOOK_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/hooks/post-update.d"
+mkdir -p "$HOOK_DIR"
+chmod +x "$REPO/bin/zenbook-duo-bar"
+ln -sfn "$REPO/bin/zenbook-duo-bar" "$HOOK_DIR/zenbook-duo-bar"
+if command -v omarchy >/dev/null && [[ ! -d ${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/${USER:-$(id -un)}.bar ]]; then
+  "$REPO/bin/zenbook-duo-bar" refresh </dev/null || true
+fi
+
 if command -v cargo >/dev/null; then
   if (cd "$REPO/keyboard" && cargo build --release --locked); then
     # Close a running keyboard so the next open runs the new build.

@@ -22,6 +22,11 @@ if [[ -L $HOME/.config/omarchy/plugins/$PLUGIN_ID ]]; then
   rm -f "$HOME/.config/omarchy/plugins/$PLUGIN_ID"
   command -v omarchy >/dev/null && omarchy restart shell >/dev/null 2>&1 || true
 fi
+HOOK="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/hooks/post-update.d/zenbook-duo-bar"
+if [[ -L $HOOK ]]; then
+  "$HOOK" remove >/dev/null 2>&1 || true
+  rm -f "$HOOK"
+fi
 systemctl --user disable --now zenbook-duo-keyboard-watch.service 2>/dev/null || true
 systemctl --user disable --now zenbook-duo-fnkeys.service 2>/dev/null || true
 rm -f "$UNIT_DIR/zenbook-duo-keyboard-watch.service" "$UNIT_DIR/zenbook-duo-fnkeys.service"
