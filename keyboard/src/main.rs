@@ -8,6 +8,7 @@
 //! virtual pointer (see input.rs). No root needed.
 
 mod input;
+mod theme;
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -47,8 +48,8 @@ fn icon_offset(c: char) -> f32 {
         };
         let Ok(face) = ttf_parser::Face::parse(&data, 0) else { return map };
         let em = f32::from(face.units_per_em());
-        let icons = ROWS.iter().flat_map(|r| r.keys.iter().map(|k| &k.legend))
-            .chain(BOTTOM_KEYS.iter().map(|(_, _, k)| &k.legend))
+        let icons = rows().iter().flat_map(|r| r.keys.iter().map(|k| &k.legend))
+            .chain(bottom_keys().iter().map(|(_, _, k)| &k.legend))
             .chain(ARROWS.iter().map(|(_, k)| &k.legend));
         for legend in icons {
             let Legend::Icon(c, _) = *legend else { continue };
@@ -93,6 +94,7 @@ enum Modifier {
     Shift,
     Ctrl,
     Alt,
+    AltGr,
     Super,
 }
 
@@ -102,6 +104,7 @@ impl Modifier {
             Modifier::Shift => input::MOD_SHIFT,
             Modifier::Ctrl => input::MOD_CTRL,
             Modifier::Alt => input::MOD_ALT,
+            Modifier::AltGr => input::MOD_ALTGR,
             Modifier::Super => input::MOD_SUPER,
         }
     }
@@ -114,6 +117,8 @@ enum Legend {
     Main(&'static str),
     /// Shifted symbol above, plain symbol below (number row, punctuation).
     Dual(&'static str, &'static str),
+    /// As Dual, plus the AltGr symbol at the lower right (Nordic layouts).
+    Triple(&'static str, &'static str, &'static str),
     /// Small text label (Ctrl, Caps, …).
     Word(&'static str),
     /// An icon, optionally with a small F-key name beside it.
@@ -136,6 +141,9 @@ const fn letter(l: &'static str, sym: &'static str, plain: char, upper: char) ->
 const fn dual(top: &'static str, main: &'static str, sym: &'static str, plain: char, shifted: char) -> KeyDef {
     key(1.0, Legend::Dual(top, main), Action::Char(sym, plain, shifted))
 }
+const fn triple(top: &'static str, main: &'static str, alt: &'static str, sym: &'static str, plain: char, shifted: char) -> KeyDef {
+    key(1.0, Legend::Triple(top, main, alt), Action::Char(sym, plain, shifted))
+}
 const fn frow(icon: char, f: &'static str, media: &'static str) -> KeyDef {
     key(1.0, Legend::Icon(icon, f), Action::FRow(media, f))
 }
@@ -147,7 +155,7 @@ struct RowDef {
     keys: &'static [KeyDef],
 }
 
-const ROWS: &[RowDef] = &[
+const US_ROWS: &[RowDef] = &[
     RowDef {
         span: (230.0, 1368.0, 206.0, 241.0),
         keys: &[
@@ -244,10 +252,112 @@ const ROWS: &[RowDef] = &[
     },
 ];
 
+/// Finnish/Swedish ISO layout on the same deck. Keysyms name the physical
+/// key (by its US-layout name, see input.rs); the fi keymap gives it its
+/// Nordic characters. There is no room for ISO's L-shaped Enter, so the
+/// '* key sits where the US backslash key is.
+const FI_ROWS: &[RowDef] = &[
+    RowDef {
+        span: (230.0, 1368.0, 206.0, 241.0),
+        keys: &[
+            key(1.0, Legend::Icon('\u{f033e}', "esc"), Action::Key("Escape", "Escape")),
+            frow('\u{f0581}', "F1", "XF86AudioMute"),
+            frow('\u{f075e}', "F2", "XF86AudioLowerVolume"),
+            frow('\u{f075d}', "F3", "XF86AudioRaiseVolume"),
+            frow('\u{f0313}', "F4", "XF86KbdLightOnOff"),
+            frow('\u{f00de}', "F5", "XF86MonBrightnessDown"),
+            frow('\u{f00e0}', "F6", "XF86MonBrightnessUp"),
+            frow('\u{f037a}', "F7", "XF86Display"),
+            frow('\u{f0e51}', "F8", "Print"),
+            key(1.0, Legend::Word("F9"), Action::FRow("F9", "F9")),
+            frow('\u{f036d}', "F10", "XF86AudioMicMute"),
+            key(1.0, Legend::Word("F11"), Action::FRow("F11", "F11")),
+            key(1.0, Legend::Word("/A  F12"), Action::FRow("F12", "F12")),
+            key(1.0, Legend::Icon('\u{f030f}', ""), Action::Hide),
+            key(1.0, Legend::Icon('\u{f04e1}', ""), Action::SwapScreens),
+            key(1.0, Legend::Word("DEL INS"), Action::Key("Delete", "Insert")),
+        ],
+    },
+    RowDef {
+        span: (230.0, 1368.0, 250.0, 310.0),
+        keys: &[
+            dual("½", "§", "grave", '§', '½'),
+            dual("!", "1", "1", '1', '!'),
+            triple("\"", "2", "@", "2", '2', '"'),
+            triple("#", "3", "£", "3", '3', '#'),
+            triple("¤", "4", "$", "4", '4', '¤'),
+            triple("%", "5", "€", "5", '5', '%'),
+            dual("&", "6", "6", '6', '&'),
+            triple("/", "7", "{", "7", '7', '/'),
+            triple("(", "8", "[", "8", '8', '('),
+            triple(")", "9", "]", "9", '9', ')'),
+            triple("=", "0", "}", "0", '0', '='),
+            triple("?", "+", "\\", "minus", '+', '?'),
+            dual("`", "´", "equal", '´', '`'),
+            key(1.66, Legend::Main("←"), Action::Key("BackSpace", "BackSpace")),
+        ],
+    },
+    RowDef {
+        span: (228.0, 1370.0, 322.0, 385.0),
+        keys: &[
+            key(1.67, Legend::Icon('\u{f0312}', ""), Action::Key("Tab", "Tab")),
+            letter("Q", "q", 'q', 'Q'),
+            letter("W", "w", 'w', 'W'),
+            key(1.0, Legend::Triple("", "E", "€"), Action::Char("e", 'e', 'E')),
+            letter("R", "r", 'r', 'R'),
+            letter("T", "t", 't', 'T'),
+            letter("Y", "y", 'y', 'Y'),
+            letter("U", "u", 'u', 'U'),
+            letter("I", "i", 'i', 'I'),
+            letter("O", "o", 'o', 'O'),
+            letter("P", "p", 'p', 'P'),
+            letter("Å", "bracketleft", 'å', 'Å'),
+            triple("^", "¨", "~", "bracketright", '¨', '^'),
+            key(1.15, Legend::Dual("*", "'"), Action::Char("backslash", '\'', '*')),
+        ],
+    },
+    RowDef {
+        span: (226.0, 1372.0, 395.0, 458.0),
+        keys: &[
+            key(1.9, Legend::Word("CAPS"), Action::Caps),
+            letter("A", "a", 'a', 'A'),
+            letter("S", "s", 's', 'S'),
+            letter("D", "d", 'd', 'D'),
+            letter("F", "f", 'f', 'F'),
+            letter("G", "g", 'g', 'G'),
+            letter("H", "h", 'h', 'H'),
+            letter("J", "j", 'j', 'J'),
+            letter("K", "k", 'k', 'K'),
+            letter("L", "l", 'l', 'L'),
+            letter("Ö", "semicolon", 'ö', 'Ö'),
+            letter("Ä", "apostrophe", 'ä', 'Ä'),
+            key(1.93, Legend::Icon('\u{f0311}', ""), Action::Key("Return", "Return")),
+        ],
+    },
+    RowDef {
+        span: (223.0, 1375.0, 470.0, 533.0),
+        keys: &[
+            key(1.35, Legend::Icon('\u{f0636}', ""), Action::Mod(Modifier::Shift)),
+            triple(">", "<", "|", "less", '<', '>'),
+            letter("Z", "z", 'z', 'Z'),
+            letter("X", "x", 'x', 'X'),
+            letter("C", "c", 'c', 'C'),
+            letter("V", "v", 'v', 'V'),
+            letter("B", "b", 'b', 'B'),
+            letter("N", "n", 'n', 'N'),
+            letter("M", "m", 'm', 'M'),
+            dual(";", ",", "comma", ',', ';'),
+            dual(":", ".", "period", '.', ':'),
+            dual("_", "-", "slash", '-', '_'),
+            key(2.45, Legend::Icon('\u{f0636}', ""), Action::Mod(Modifier::Shift)),
+        ],
+    },
+];
+
 /// Bottom row, given key by key in photo pixels (left, right) because of
 /// the half-height arrow cluster. Top and bottom of the row:
 const BOTTOM_ROW: (f32, f32) = (543.0, 607.0);
-const BOTTOM_KEYS: &[(f32, f32, KeyDef)] = &[
+const US_BOTTOM_KEYS: &[(f32, f32, KeyDef)] = &[
     (221.0, 321.0, key(0.0, Legend::Word("CTRL"), Action::Mod(Modifier::Ctrl))),
     (332.0, 400.0, key(0.0, Legend::Word("FN"), Action::Fn)),
     (410.0, 480.0, key(0.0, Legend::Icon('\u{f05b3}', ""), Action::Mod(Modifier::Super))),
@@ -256,6 +366,63 @@ const BOTTOM_KEYS: &[(f32, f32, KeyDef)] = &[
     (960.0, 1027.0, key(0.0, Legend::Word("ALT"), Action::Mod(Modifier::Alt))),
     (1038.0, 1107.0, key(0.0, Legend::Icon('\u{f0674}', ""), Action::Chord(input::MOD_SHIFT | input::MOD_SUPER, "F23"))),
 ];
+/// Nordic keyboards have AltGr on the right.
+const FI_BOTTOM_KEYS: &[(f32, f32, KeyDef)] = &[
+    (221.0, 321.0, key(0.0, Legend::Word("CTRL"), Action::Mod(Modifier::Ctrl))),
+    (332.0, 400.0, key(0.0, Legend::Word("FN"), Action::Fn)),
+    (410.0, 480.0, key(0.0, Legend::Icon('\u{f05b3}', ""), Action::Mod(Modifier::Super))),
+    (490.0, 558.0, key(0.0, Legend::Word("ALT"), Action::Mod(Modifier::Alt))),
+    (568.0, 950.0, key(0.0, Legend::Blank, Action::Char("space", ' ', ' '))),
+    (960.0, 1027.0, key(0.0, Legend::Word("ALT GR"), Action::Mod(Modifier::AltGr))),
+    (1038.0, 1107.0, key(0.0, Legend::Icon('\u{f0674}', ""), Action::Chord(input::MOD_SHIFT | input::MOD_SUPER, "F23"))),
+];
+
+/// Keyboard layout the deck shows and types with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Us,
+    Fi,
+}
+
+/// Follow Hyprland's first keyboard layout, or ZENBOOK_DUO_OSK_LAYOUT (us,
+/// fi). Finnish and Swedish share the deck; anything else gets US.
+fn layout() -> Layout {
+    static LAYOUT: OnceLock<Layout> = OnceLock::new();
+    *LAYOUT.get_or_init(|| {
+        let name = std::env::var("ZENBOOK_DUO_OSK_LAYOUT").ok().or_else(|| {
+            let out = Command::new("hyprctl").args(["getoption", "input:kb_layout", "-j"]).output().ok()?;
+            let json = String::from_utf8_lossy(&out.stdout).into_owned();
+            let value = json.split_once("\"str\":")?.1.trim_start().strip_prefix('"')?.split('"').next()?.to_string();
+            Some(value)
+        });
+        match name.as_deref().and_then(|n| n.split(',').next()).map(str::trim) {
+            Some("fi" | "se") => Layout::Fi,
+            _ => Layout::Us,
+        }
+    })
+}
+
+fn rows() -> &'static [RowDef] {
+    match layout() {
+        Layout::Us => US_ROWS,
+        Layout::Fi => FI_ROWS,
+    }
+}
+
+fn bottom_keys() -> &'static [(f32, f32, KeyDef)] {
+    match layout() {
+        Layout::Us => US_BOTTOM_KEYS,
+        Layout::Fi => FI_BOTTOM_KEYS,
+    }
+}
+
+/// XKB layout for the virtual keyboard's keymap.
+fn xkb_layout() -> &'static str {
+    match layout() {
+        Layout::Us => "us",
+        Layout::Fi => "fi",
+    }
+}
 /// Arrow cluster: (left, right, top, bottom) in photo pixels.
 const ARROWS: &[((f32, f32, f32, f32), KeyDef)] = &[
     ((1118.0, 1192.0, 577.0, 607.0), key(0.0, Legend::Icon('\u{f035e}', ""), Action::Key("Left", "Home"))),
@@ -284,7 +451,7 @@ fn frac(l: f32, t: f32, r: f32, b: f32) -> Rectangle {
 
 fn build_layout() -> Vec<Placed> {
     let mut keys = Vec::new();
-    for row in ROWS {
+    for row in rows() {
         let (left, right, top, bottom) = row.span;
         let units: f32 = row.keys.iter().map(|k| k.units).sum();
         let unit = (right - left + GAP) / units;
@@ -295,7 +462,7 @@ fn build_layout() -> Vec<Placed> {
             x += w + GAP;
         }
     }
-    for (l, r, k) in BOTTOM_KEYS {
+    for (l, r, k) in bottom_keys() {
         keys.push(Placed { rect: frac(*l, BOTTOM_ROW.0, *r, BOTTOM_ROW.1), legend: k.legend, action: k.action });
     }
     for ((l, r, t, b), k) in ARROWS {
@@ -313,6 +480,8 @@ enum Message {
     KeyUp(usize),
     Tick(Instant),
     Input(InputCmd),
+    /// Look for a theme switch.
+    ThemeCheck,
 }
 
 struct Keyboard {
@@ -327,6 +496,10 @@ struct Keyboard {
     deck: canvas::Cache,
     /// Key being held for auto-repeat: index, pressed at, last repeat.
     repeat: Option<(usize, Instant, Instant)>,
+    /// Hyprland's window frame, drawn around the deck.
+    frame: theme::Frame,
+    /// colors.toml's modification time when the palette was loaded.
+    theme_stamp: Option<std::time::SystemTime>,
 }
 
 /// Hold this long before a key repeats, then repeat at this interval
@@ -342,9 +515,11 @@ impl Keyboard {
             latched: Vec::new(),
             caps: false,
             fn_lock: false,
-            output: input::spawn(),
+            output: input::spawn(xkb_layout()),
             deck: canvas::Cache::new(),
             repeat: None,
+            frame: theme::frame(),
+            theme_stamp: theme::stamp(),
         }
     }
 
@@ -376,6 +551,14 @@ impl Keyboard {
             }
             Message::Input(cmd) => {
                 let _ = self.output.send(cmd);
+            }
+            Message::ThemeCheck => {
+                let stamp = theme::stamp();
+                if stamp != self.theme_stamp {
+                    self.theme_stamp = stamp;
+                    theme::load();
+                    self.deck.clear();
+                }
             }
             _ => {}
         }
@@ -426,7 +609,7 @@ impl Keyboard {
                     // Plain typing: send the character itself, so it does not
                     // depend on the active layout's shift level.
                     let shift = self.latched.contains(&Modifier::Shift);
-                    let upper = shift ^ (self.caps && plain.is_ascii_alphabetic());
+                    let upper = shift ^ (self.caps && plain.is_alphabetic());
                     // Shift is held only where it changes the character.
                     let mods = if upper && shifted != plain { input::MOD_SHIFT } else { 0 };
                     self.send(sym, mods);
@@ -468,9 +651,10 @@ impl Keyboard {
     }
 
     fn subscription(&self) -> iced::Subscription<Message> {
+        let theme = iced::time::every(Duration::from_secs(2)).map(|_| Message::ThemeCheck);
         match self.repeat {
-            Some(_) => iced::time::every(Duration::from_millis(10)).map(Message::Tick),
-            None => iced::Subscription::none(),
+            Some(_) => iced::Subscription::batch([iced::time::every(Duration::from_millis(10)).map(Message::Tick), theme]),
+            None => theme,
         }
     }
 
@@ -611,22 +795,28 @@ impl<'a> canvas::Program<Message> for Deck<'a> {
         let size = bounds.size();
         let unit_h = size.height * (60.0 / (DECK.3 - DECK.1));
         let kb = self.kb;
+        let colors = theme::palette();
         let deck = kb.deck.draw(renderer, size, |frame| {
-            frame.fill_rectangle(Point::ORIGIN, size, DECK_COLOR);
+            // Framed like a window: border colour, then the deck inset by
+            // the border width, both with the windows' rounding.
+            let (b, r) = (kb.frame.border, kb.frame.rounding);
+            frame.fill(&Path::rounded_rectangle(Point::ORIGIN, size, r.into()), colors.border);
+            let inner = Size::new(size.width - 2.0 * b, size.height - 2.0 * b);
+            frame.fill(&Path::rounded_rectangle(Point::new(b, b), inner, (r - b).max(0.0).into()), colors.deck);
             let pad = deck_rect(size, frac(PAD.0, PAD.1, PAD.2, PAD.3));
             let r = 0.012 * size.height;
-            frame.fill(&Path::rounded_rectangle(pad.position(), pad.size(), r.into()), PAD_COLOR);
+            frame.fill(&Path::rounded_rectangle(pad.position(), pad.size(), r.into()), colors.pad);
             for k in &kb.keys {
-                draw_key(frame, size, k, kb, unit_h, KEY_COLOR);
+                draw_key(frame, size, k, kb, unit_h, colors.key);
             }
         });
         // Only pressed and latched keys are drawn per frame.
         let mut frame = Frame::new(renderer, size);
         for (i, k) in kb.keys.iter().enumerate() {
             if kb.held.contains(&i) {
-                draw_key(&mut frame, size, k, kb, unit_h, KEY_PRESSED);
+                draw_key(&mut frame, size, k, kb, unit_h, colors.pressed);
             } else if kb.lit(k.action) {
-                draw_key(&mut frame, size, k, kb, unit_h, KEY_LIT);
+                draw_key(&mut frame, size, k, kb, unit_h, colors.lit);
             }
         }
         vec![deck, frame.into_geometry()]
@@ -647,18 +837,15 @@ fn draw_key(frame: &mut Frame, size: Size, k: &Placed, kb: &Keyboard, unit_h: f3
     draw_legend(frame, rect, k, kb, unit_h, unit, portrait);
 }
 
-const DECK_COLOR: Color = Color::from_rgb8(0x56, 0x57, 0x5b);
-const PAD_COLOR: Color = Color::from_rgb8(0x4b, 0x4c, 0x50);
-const KEY_COLOR: Color = Color::from_rgb8(0x35, 0x36, 0x39);
-const KEY_PRESSED: Color = Color::from_rgb8(0x6c, 0x6e, 0x74);
-const KEY_LIT: Color = Color::from_rgb8(0x3a, 0x5d, 0xa8);
-const LEGEND: Color = Color::from_rgb8(0xd9, 0xda, 0xdc);
-
 fn label(frame: &mut Frame, content: String, at: Point, size: f32, font: Font, align_x: Alignment) {
+    label_in(frame, content, at, size, font, align_x, theme::palette().legend);
+}
+
+fn label_in(frame: &mut Frame, content: String, at: Point, size: f32, font: Font, align_x: Alignment, color: Color) {
     frame.fill_text(Text {
         content,
         position: at,
-        color: LEGEND,
+        color,
         size: Pixels(size),
         font,
         align_x,
@@ -695,6 +882,18 @@ fn draw_legend(frame: &mut Frame, rect: Rectangle, k: &Placed, kb: &Keyboard, un
             let left = rect.x + 0.28 * rect.width;
             label(frame, top.into(), Point::new(left, rect.y + 0.28 * rect.height), small, Font::DEFAULT, Alignment::Center);
             label(frame, bottom.into(), Point::new(center.x, rect.y + 0.62 * rect.height), main, Font::DEFAULT, Alignment::Center);
+        }
+        Legend::Triple(top, bottom, alt) => {
+            // Shifted upper left, plain in the middle, AltGr lower right.
+            let left = rect.x + 0.28 * rect.width;
+            let right = rect.x + 0.76 * rect.width;
+            if !top.is_empty() {
+                label(frame, top.into(), Point::new(left, rect.y + 0.28 * rect.height), small, Font::DEFAULT, Alignment::Center);
+            }
+            let main_at = if top.is_empty() { center } else { Point::new(center.x, rect.y + 0.62 * rect.height) };
+            label(frame, bottom.into(), main_at, if top.is_empty() { main } else { main * 0.9 }, Font::DEFAULT, Alignment::Center);
+            let alt_at = Point::new(right, rect.y + 0.76 * rect.height);
+            label_in(frame, alt.into(), alt_at, small, Font::DEFAULT, Alignment::Center, theme::palette().alt_legend);
         }
         Legend::Word(s) => {
             let s = match k.action {
@@ -796,7 +995,7 @@ fn main() -> Result<(), iced_layershell::Error> {
     // virtual keyboard into the focused window, without showing the deck.
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 3 && args[1] == "--type" {
-        let out = input::spawn();
+        let out = input::spawn("us");
         for c in args[2].chars() {
             let (keysym, mods) = input::char_key(c);
             let _ = out.send(InputCmd::Key { keysym, mods });
@@ -807,18 +1006,24 @@ fn main() -> Result<(), iced_layershell::Error> {
     // Software rendering: the deck is flat shapes and text, and skipping the
     // GPU renderer keeps start-up quick and memory low.
     announce(true);
+    theme::load();
+    let gaps = theme::frame().gaps;
     if std::env::var_os("ICED_BACKEND").is_none() {
         // SAFETY: no other threads exist yet.
         unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
     }
     iced_layershell::application(Keyboard::new, namespace, Keyboard::update, Keyboard::view)
         .subscription(Keyboard::subscription)
+        // Transparent outside the framed deck (rounded corners).
+        .style(|_, _| iced::theme::Style { background_color: Color::TRANSPARENT, text_color: theme::palette().legend })
         .settings(Settings {
             layer_settings: LayerShellSettings {
                 anchor: Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
                 layer: Layer::Top,
                 exclusive_zone: -1,
                 size: None,
+                // The windows' outer gap, so the deck sits like a window.
+                margin: (gaps, gaps, gaps, gaps),
                 keyboard_interactivity: KeyboardInteractivity::None,
                 start_mode: StartMode::TargetScreen(OUTPUT.to_string()),
                 ..Default::default()

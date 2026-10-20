@@ -2,8 +2,9 @@
 //! (zwp_virtual_keyboard_v1) and a virtual pointer (zwlr_virtual_pointer_v1),
 //! fed from a channel so the UI thread never blocks on it.
 //!
-//! The keyboard gets a standard US keymap once, at start, and every key is
-//! sent on its real evdev code (Shift held for shifted characters), exactly
+//! The keyboard gets a standard keymap for the chosen layout (us, fi) once,
+//! at start, and every key is sent on its real evdev code (Shift or AltGr
+//! held for shifted and third-level characters), exactly
 //! like a physical keyboard. That matters: Hyprland matches its key bindings
 //! against those codes, so made-up codes would trigger the wrong bindings.
 
@@ -31,6 +32,8 @@ pub const MOD_SHIFT: u32 = 1;
 pub const MOD_CTRL: u32 = 4;
 pub const MOD_ALT: u32 = 8;
 pub const MOD_SUPER: u32 = 64;
+/// ISO_Level3_Shift (AltGr) is Mod5 in the pc keymaps.
+pub const MOD_ALTGR: u32 = 128;
 
 #[derive(Debug, Clone, Copy)]
 pub enum InputCmd {
@@ -43,7 +46,9 @@ pub enum InputCmd {
     Click(u32),
 }
 
-/// evdev code of the key carrying `keysym` in a standard US layout.
+/// evdev code of the key carrying `keysym` in a standard US layout. Other
+/// layouts reuse these names for the same physical keys; "less" is the ISO
+/// key left of Z that US keyboards lack.
 fn evdev_code(keysym: &str) -> Option<u32> {
     const LETTERS: &[(&str, u32)] = &[
         ("q", 16), ("w", 17), ("e", 18), ("r", 19), ("t", 20), ("y", 21), ("u", 22), ("i", 23), ("o", 24),
@@ -57,7 +62,7 @@ fn evdev_code(keysym: &str) -> Option<u32> {
         "1" => 2, "2" => 3, "3" => 4, "4" => 5, "5" => 6, "6" => 7, "7" => 8, "8" => 9, "9" => 10, "0" => 11,
         "minus" => 12, "equal" => 13, "BackSpace" => 14, "Tab" => 15, "bracketleft" => 26,
         "bracketright" => 27, "Return" => 28, "semicolon" => 39, "apostrophe" => 40, "grave" => 41,
-        "backslash" => 43, "comma" => 51, "period" => 52, "slash" => 53, "space" => 57, "Escape" => 1,
+        "backslash" => 43, "less" => 86, "comma" => 51, "period" => 52, "slash" => 53, "space" => 57, "Escape" => 1,
         "F1" => 59, "F2" => 60, "F3" => 61, "F4" => 62, "F5" => 63, "F6" => 64, "F7" => 65, "F8" => 66,
         "F9" => 67, "F10" => 68, "F11" => 87, "F12" => 88, "F23" => 193, "Print" => 99,
         "Home" => 102, "Up" => 103, "Prior" => 104, "Left" => 105, "Right" => 106, "End" => 107,
@@ -97,20 +102,24 @@ pub fn char_key(c: char) -> (&'static str, u32) {
     }
 }
 
-const KEYMAP: &str = "xkb_keymap {\n\
-    xkb_keycodes { include \"evdev+aliases(qwerty)\" };\n\
-    xkb_types { include \"complete\" };\n\
-    xkb_compat { include \"complete\" };\n\
-    xkb_symbols { include \"pc+us+inet(evdev)\" };\n\
-};\n";
+fn keymap(layout: &str) -> String {
+    format!(
+        "xkb_keymap {{\n\
+    xkb_keycodes {{ include \"evdev+aliases(qwerty)\" }};\n\
+    xkb_types {{ include \"complete\" }};\n\
+    xkb_compat {{ include \"complete\" }};\n\
+    xkb_symbols {{ include \"pc+{layout}+inet(evdev)\" }};\n\
+}};\n"
+    )
+}
 
 /// The keymap has to be passed as a file descriptor.
-fn keymap_file() -> std::io::Result<(std::fs::File, u32)> {
+fn keymap_file(layout: &str) -> std::io::Result<(std::fs::File, u32)> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".into());
     let path = std::path::Path::new(&dir).join(format!("zenbook-duo-keyboard-{}.xkb", std::process::id()));
     let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
     let _ = std::fs::remove_file(&path);
-    let mut text = KEYMAP.as_bytes().to_vec();
+    let mut text = keymap(layout).into_bytes();
     text.push(0);
     f.write_all(&text)?;
     f.flush()?;
@@ -179,9 +188,9 @@ macro_rules! ignore_events {
 }
 ignore_events!(ZwlrVirtualPointerManagerV1, ZwlrVirtualPointerV1, ZwpVirtualKeyboardManagerV1, ZwpVirtualKeyboardV1);
 
-/// Start the input thread. Without compositor support for a protocol, the
-/// matching commands are dropped.
-pub fn spawn() -> Sender<InputCmd> {
+/// Start the input thread, typing with the XKB `layout` (us, fi). Without
+/// compositor support for a protocol, the matching commands are dropped.
+pub fn spawn(layout: &'static str) -> Sender<InputCmd> {
     let (tx, rx) = mpsc::channel::<InputCmd>();
     std::thread::spawn(move || {
         let Ok(conn) = Connection::connect_to_env() else { return };
@@ -207,7 +216,7 @@ pub fn spawn() -> Sender<InputCmd> {
         // Keep the keymap file alive as long as the keyboard.
         let mut _keymap = None;
         let keyboard = globals.bind::<ZwpVirtualKeyboardManagerV1, _, _>(&qh, 1..=1, ()).ok().and_then(|m| {
-            let (file, size) = keymap_file().ok()?;
+            let (file, size) = keymap_file(layout).ok()?;
             let kb = m.create_virtual_keyboard(&seat, &qh, ());
             kb.keymap(wl_keyboard::KeymapFormat::XkbV1.into(), file.as_fd(), size);
             _keymap = Some(file);
