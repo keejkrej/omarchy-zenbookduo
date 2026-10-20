@@ -21,4 +21,12 @@ udevadm trigger --subsystem-match=input --action=add
 udevadm trigger --subsystem-match=hidraw --action=add
 udevadm trigger --subsystem-match=hidraw --action=change
 
-echo "Installed Duo libinput quirks, touchpad hwdb, and hidraw udev rules."
+# Root daemon that turns the two halves' accelerometers into a hinge angle.
+# A copy, not a link into the user's checkout, since it runs as root.
+install -D -m 755 "$REPO/bin/zenbook-duo-hinge" /usr/local/lib/omarchy-zenbookduo/zenbook-duo-hinge
+install -m 644 "$REPO/systemd/zenbook-duo-hinge.service" /etc/systemd/system/zenbook-duo-hinge.service
+systemctl daemon-reload
+systemctl enable zenbook-duo-hinge.service
+systemctl restart zenbook-duo-hinge.service
+
+echo "Installed Duo libinput quirks, touchpad hwdb, hidraw udev rules, and hinge service."

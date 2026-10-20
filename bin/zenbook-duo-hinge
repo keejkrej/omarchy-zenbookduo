@@ -1,0 +1,109 @@
+#!/usr/bin/python3 -I
+"""Publish the Zenbook Duo UX8406 hinge angle for zenbook-duo-rotate-watch.
+
+The sensor hub lists an Intel hinge sensor, but on the UX8406MA its firmware
+leaves every channel at 0. It does expose one accelerometer in each half as
+ASUS custom sensors (HID usage 0x2000e1 wrapping an accelerometer, custom
+usage 0x73), reachable only through hid-sensor-custom's root-only /dev nodes.
+The hinge rotates about both sensors' x axis, so the opening angle is the
+difference of the gravity directions in their y-z planes: 0 closed, ~110
+typing, 180 flat.
+
+Writes whole degrees to /run/zenbook-duo/hinge. While the hinge axis points
+at the ground (laptop on its side) gravity says nothing about the angle, so
+the last value is kept. Run as root by zenbook-duo-hinge.service.
+"""
+
+import glob
+import math
+import os
+import select
+import signal
+import struct
+import sys
+
+SYSFS = "/sys/bus/platform/devices"
+OUT_DIR = "/run/zenbook-duo"
+OUT = os.path.join(OUT_DIR, "hinge")
+ACCEL_USAGE = 0x73
+MIN_G = 0.35  # gravity in the y-z plane below this: hinge axis near vertical
+
+
+def accel_sensors():
+    """Custom sensors wrapping an accelerometer, in hub order: lid, then base."""
+    found = []
+    for path in glob.glob(f"{SYSFS}/HID-SENSOR-2000e1.*.auto"):
+        for usage in glob.glob(f"{path}/input-*-200541/input-*-200541-value"):
+            try:
+                if int(open(usage).read()) == ACCEL_USAGE:
+                    found.append(path)
+            except (OSError, ValueError):
+                pass
+    found.sort(key=lambda p: int(p.rsplit(".", 2)[-2]))
+    return found
+
+
+def set_enabled(paths, on):
+    for path in paths:
+        try:
+            with open(f"{path}/enable_sensor", "w") as f:
+                f.write("1" if on else "0")
+        except OSError:
+            pass
+
+
+def publish(angle):
+    tmp = OUT + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(f"{angle}\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, OUT)
+
+
+def main():
+    sensors = accel_sensors()
+    if len(sensors) != 2:
+        print(f"expected 2 accelerometers, found {len(sensors)}", file=sys.stderr)
+        return 1
+    lid, base = sensors
+    # Leave the sensors off again when systemd stops the service.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    os.makedirs(OUT_DIR, mode=0o755, exist_ok=True)
+    set_enabled(sensors, True)
+    fds = {os.open(f"/dev/{os.path.basename(p)}", os.O_RDONLY | os.O_NONBLOCK): p for p in sensors}
+    pending = {p: b"" for p in sensors}
+    gravity = {}
+    published = None
+    try:
+        while True:
+            ready, _, _ = select.select(list(fds), [], [])
+            for fd in ready:
+                path = fds[fd]
+                pending[path] += os.read(fd, 4096)
+                # hid-sensor-custom sample: u32 usage, u64 timestamp, u32 length,
+                # then the raw report, which ends in x, y, z (s32, micro-g) and
+                # a u16 custom usage.
+                while len(pending[path]) >= 16:
+                    _, _, length = struct.unpack_from("<IQI", pending[path])
+                    if len(pending[path]) < 16 + length:
+                        break
+                    raw = pending[path][16:16 + length]
+                    pending[path] = pending[path][16 + length:]
+                    if length >= 14:
+                        gravity[path] = struct.unpack_from("<iii", raw, length - 14)
+            if len(gravity) < 2:
+                continue
+            _, ly, lz = (v / 1e6 for v in gravity[lid])
+            _, by, bz = (v / 1e6 for v in gravity[base])
+            if math.hypot(ly, lz) < MIN_G or math.hypot(by, bz) < MIN_G:
+                continue
+            angle = round((180 - math.degrees(math.atan2(ly, lz) - math.atan2(by, bz))) % 360)
+            if angle != published:
+                publish(angle)
+                published = angle
+    finally:
+        set_enabled(sensors, False)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

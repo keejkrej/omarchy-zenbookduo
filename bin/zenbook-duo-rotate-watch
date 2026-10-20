@@ -13,8 +13,8 @@
 # bottom one (monitors.lua binds it there), except in portrait, where 1 is
 # always on the left panel (see set_swap).
 #
-# Needs: iio-sensor-proxy. UX8406MA sensors work with the stock firmware; its
-# hinge sensor reads 0, so sharing mode never starts there.
+# Needs: iio-sensor-proxy, and on the UX8406MA zenbook-duo-hinge.service for
+# the hinge angle (its hinge sensor reads 0).
 # Run by zenbook-duo-rotate-watch.service.
 #
 # Touch ~/.local/state/zenbook/rotation-lock to hold the current layout.
@@ -41,6 +41,11 @@ hinge_raw() {
   done 2>/dev/null
 }
 HINGE=$(hinge_raw)
+# UX8406MA: the hinge sensor reads 0; zenbook-duo-hinge.service computes the
+# angle from the lid and base accelerometers instead.
+if [[ -e /etc/systemd/system/zenbook-duo-hinge.service ]]; then
+  HINGE=/run/zenbook-duo/hinge
+fi
 
 # In portrait, workspace 1 belongs on the left screen. With the top panel on
 # the left (right-up) that is already so; with it on the right (left-up) the

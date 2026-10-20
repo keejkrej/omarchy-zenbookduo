@@ -62,6 +62,10 @@ if [[ -f $HYPR_DIR/autostart.lua ]]; then
 fi
 
 remove_system() {
+  systemctl disable --now zenbook-duo-hinge.service 2>/dev/null || true
+  rm -f /etc/systemd/system/zenbook-duo-hinge.service
+  rm -rf /usr/local/lib/omarchy-zenbookduo
+  systemctl daemon-reload
   rm -f /etc/libinput/omarchy-zenbookduo.quirks \
     /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb \
     /etc/udev/rules.d/61-omarchy-zenbookduo.rules
@@ -75,7 +79,7 @@ if [[ $EUID -eq 0 ]]; then
 elif sudo -n true 2>/dev/null; then
   sudo bash -c "$(declare -f remove_system); remove_system"
 elif command -v pkexec >/dev/null; then
-  pkexec /bin/bash -c 'rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb /etc/udev/rules.d/61-omarchy-zenbookduo.rules; systemd-hwdb update; udevadm control --reload-rules; udevadm trigger --subsystem-match=input --action=change'
+  pkexec /bin/bash -c 'systemctl disable --now zenbook-duo-hinge.service; rm -f /etc/systemd/system/zenbook-duo-hinge.service; rm -rf /usr/local/lib/omarchy-zenbookduo; systemctl daemon-reload; rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb /etc/udev/rules.d/61-omarchy-zenbookduo.rules; systemd-hwdb update; udevadm control --reload-rules; udevadm trigger --subsystem-match=input --action=change'
 fi
 
 systemctl --user daemon-reload
