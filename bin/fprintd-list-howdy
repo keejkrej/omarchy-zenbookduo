@@ -1,0 +1,11 @@
+#!/bin/bash
+# Installed as /usr/local/bin/fprintd-list. The Omarchy lock screen only runs
+# its automatic omarchy-lock-fingerprint stack when `fprintd-list $USER`
+# mentions a finger; while that stack uses Howdy, say so, so face unlock
+# starts as soon as the screen locks. Real fingerprints still list as usual.
+
+[[ -x /usr/bin/fprintd-list ]] && /usr/bin/fprintd-list "$@"
+if grep -q pam_howdy /etc/pam.d/omarchy-lock-fingerprint 2>/dev/null; then
+  echo " - #0: howdy face (stands in for a finger for the Omarchy lock screen)"
+fi
+exit 0

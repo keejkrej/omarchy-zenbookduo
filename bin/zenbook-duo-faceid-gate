@@ -1,0 +1,11 @@
+#!/bin/bash
+# pam_exec gate before pam_howdy in the lock screen's automatic stack: exit
+# 0 skips the camera. The lock screen retries that stack 250 ms after every
+# failure, so while all built-in panels are blanked, skip and wait a little
+# instead of keeping the IR camera on.
+
+for dpms in /sys/class/drm/card*-eDP-*/dpms; do
+  [[ $(<"$dpms") == On ]] && exit 1
+done
+sleep 2
+exit 0

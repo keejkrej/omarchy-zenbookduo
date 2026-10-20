@@ -9,6 +9,7 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 ZENBOOK_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zenbook"
 PLUGIN_ID="io.github.scrambletools.zenbook-duo-keyboard"
 STAMP="-- omarchy-zenbookduo"
+REPO="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE="${OMARCHY_PATH:-/usr/share/omarchy}/config/hypr/monitors.lua"
 
 [[ -x $ZENBOOK_DIR/zenbook-duo-osk ]] && pgrep -f 'zenbook/zenbook-duo-keyboard$' >/dev/null && "$ZENBOOK_DIR/zenbook-duo-osk" close
@@ -67,6 +68,9 @@ if [[ -f $HYPR_DIR/autostart.lua ]]; then
 fi
 
 remove_system() {
+  if [[ -x /usr/local/lib/omarchy-zenbookduo/zenbook-duo-faceid-gate ]]; then
+    "$REPO/bin/zenbook-duo-faceid" remove || true
+  fi
   systemctl disable --now zenbook-duo-hinge.service 2>/dev/null || true
   rm -f /etc/systemd/system/zenbook-duo-hinge.service
   rm -rf /usr/local/lib/omarchy-zenbookduo
@@ -84,7 +88,7 @@ if [[ $EUID -eq 0 ]]; then
 elif sudo -n true 2>/dev/null; then
   sudo bash -c "$(declare -f remove_system); remove_system"
 elif command -v pkexec >/dev/null; then
-  pkexec /bin/bash -c 'systemctl disable --now zenbook-duo-hinge.service; rm -f /etc/systemd/system/zenbook-duo-hinge.service; rm -rf /usr/local/lib/omarchy-zenbookduo; systemctl daemon-reload; rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb /etc/udev/rules.d/61-omarchy-zenbookduo.rules; systemd-hwdb update; udevadm control --reload-rules; udevadm trigger --subsystem-match=input --action=change'
+  pkexec /bin/bash -c '[[ -x /usr/local/lib/omarchy-zenbookduo/zenbook-duo-faceid-gate ]] && '"$REPO"'/bin/zenbook-duo-faceid remove; systemctl disable --now zenbook-duo-hinge.service; rm -f /etc/systemd/system/zenbook-duo-hinge.service; rm -rf /usr/local/lib/omarchy-zenbookduo; systemctl daemon-reload; rm -f /etc/libinput/omarchy-zenbookduo.quirks /etc/udev/hwdb.d/61-omarchy-zenbookduo.hwdb /etc/udev/rules.d/61-omarchy-zenbookduo.rules; systemd-hwdb update; udevadm control --reload-rules; udevadm trigger --subsystem-match=input --action=change'
 fi
 
 systemctl --user daemon-reload
