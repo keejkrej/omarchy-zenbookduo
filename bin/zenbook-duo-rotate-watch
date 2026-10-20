@@ -42,10 +42,8 @@ hinge_raw() {
 }
 HINGE=$(hinge_raw)
 # UX8406MA: the hinge sensor reads 0; zenbook-duo-hinge.service computes the
-# angle from the lid and base accelerometers instead.
-if [[ -e /etc/systemd/system/zenbook-duo-hinge.service ]]; then
-  HINGE=/run/zenbook-duo/hinge
-fi
+# angle from the lid and base accelerometers instead and publishes it here.
+HINGE_COMPUTED=/run/zenbook-duo/hinge
 
 # In portrait, workspace 1 belongs on the left screen. With the top panel on
 # the left (right-up) that is already so; with it on the right (left-up) the
@@ -111,7 +109,9 @@ while true; do
       # Sharing needs the hinge open flat AND the laptop lying flat, which the
       # accelerometer reports as face-up or face-down. Stood on its side for
       # dual portrait (vertical / tilted) or tilted on the kickstand, it is not.
-      if [[ -n $HINGE ]] && angle=$(<"$HINGE"); then
+      hinge=$HINGE
+      [[ -e $HINGE_COMPUTED ]] && hinge=$HINGE_COMPUTED
+      if [[ -n $hinge ]] && angle=$(<"$hinge"); then
         lying=0
         [[ $tilt == face-up || $tilt == face-down ]] && lying=1
         if ((sharing == 0 && angle >= SHARE_ON && lying)); then

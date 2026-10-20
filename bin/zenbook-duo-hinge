@@ -63,8 +63,10 @@ def publish(angle):
 def main():
     sensors = accel_sensors()
     if len(sensors) != 2:
-        print(f"expected 2 accelerometers, found {len(sensors)}", file=sys.stderr)
-        return 1
+        # Not this hub layout (the kernel's hinge sensor may work here):
+        # exit cleanly so systemd does not restart us in a loop.
+        print(f"expected 2 accelerometers, found {len(sensors)}; not publishing", file=sys.stderr)
+        return 0
     lid, base = sensors
     # Leave the sensors off again when systemd stops the service.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

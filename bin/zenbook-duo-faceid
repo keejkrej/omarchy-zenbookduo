@@ -25,7 +25,6 @@ LIB=/usr/local/lib/omarchy-zenbookduo
 GATE=$LIB/zenbook-duo-faceid-gate
 SHIM=/usr/local/bin/fprintd-list
 BAK=.zenbook-duo.bak
-CAMERA=/dev/v4l/by-path/pci-0000:00:14.0-usb-0:9:1.2-video-index0
 HOWDY="auth      sufficient                  pam_howdy.so"
 LOCK_PAM=/etc/pam.d/omarchy-lock-fingerprint
 
@@ -55,9 +54,23 @@ prepend() {
   echo "Howdy added to $file"
 }
 
+# The IR camera by a stable by-path name: the capture node whose only
+# format is 8-bit greyscale. /dev/videoN numbers change between boots.
+ir_camera() {
+  local dev
+  for dev in /dev/v4l/by-path/*-video-index0; do
+    [[ $(v4l2-ctl -d "$dev" --list-formats 2>/dev/null | grep -c "'") == 1 ]] || continue
+    v4l2-ctl -d "$dev" --list-formats 2>/dev/null | grep -q "'GREY'" && { echo "$dev"; return 0; }
+  done
+  return 1
+}
+
 setup() {
-  [[ -e $CAMERA ]] || { echo "IR camera not found at $CAMERA" >&2; exit 1; }
-  howdy set device_path "$CAMERA" >/dev/null
+  command -v v4l2-ctl >/dev/null || { echo "v4l2-ctl not found: pacman -S v4l-utils" >&2; exit 1; }
+  local camera
+  camera=$(ir_camera) || { echo "No IR camera found" >&2; exit 1; }
+  echo "IR camera: $camera"
+  howdy set device_path "$camera" >/dev/null
   howdy download-models
 
   install -D -m 755 "$REPO/bin/zenbook-duo-faceid-gate" "$GATE"
