@@ -6,9 +6,22 @@ set -euo pipefail
 HYPR_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
 BIN_DIR="$HOME/.local/bin"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+ZENBOOK_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zenbook"
+PLUGIN_ID="io.github.scrambletools.zenbook-duo-keyboard"
 STAMP="-- omarchy-zenbookduo"
 TEMPLATE="${OMARCHY_PATH:-/usr/share/omarchy}/config/hypr/monitors.lua"
 
+[[ -x $ZENBOOK_DIR/zenbook-duo-osk ]] && pgrep -f 'zenbook/zenbook-duo-keyboard$' >/dev/null && "$ZENBOOK_DIR/zenbook-duo-osk" close
+systemctl --user disable --now zenbook-duo-rotate-watch.service 2>/dev/null || true
+systemctl --user disable --now zenbook-duo-auto-brightness.service 2>/dev/null || true
+rm -f "$UNIT_DIR/zenbook-duo-rotate-watch.service" "$UNIT_DIR/zenbook-duo-auto-brightness.service"
+rm -f "$ZENBOOK_DIR"/zenbook-duo-{rotate-watch,auto-brightness,osk,keyboard}
+rmdir "$ZENBOOK_DIR" 2>/dev/null || true
+if [[ -L $HOME/.config/omarchy/plugins/$PLUGIN_ID ]]; then
+  command -v omarchy >/dev/null && omarchy plugin disable "$PLUGIN_ID" >/dev/null 2>&1 || true
+  rm -f "$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+  command -v omarchy >/dev/null && omarchy restart shell >/dev/null 2>&1 || true
+fi
 systemctl --user disable --now zenbook-duo-keyboard-watch.service 2>/dev/null || true
 systemctl --user disable --now zenbook-duo-fnkeys.service 2>/dev/null || true
 rm -f "$UNIT_DIR/zenbook-duo-keyboard-watch.service" "$UNIT_DIR/zenbook-duo-fnkeys.service"
@@ -33,6 +46,15 @@ if [[ -f $HYPR_DIR/input.lua ]]; then
     { print }
   ' "$HYPR_DIR/input.lua" >"$HYPR_DIR/input.lua.tmp"
   mv "$HYPR_DIR/input.lua.tmp" "$HYPR_DIR/input.lua"
+fi
+
+if [[ -f $HYPR_DIR/bindings.lua ]]; then
+  awk -v stamp="$STAMP" '
+    $0 == stamp { skip=1; next }
+    skip && /zenbook-duo-(osk|auto-brightness)/ { next }
+    { skip=0; print }
+  ' "$HYPR_DIR/bindings.lua" >"$HYPR_DIR/bindings.lua.tmp"
+  mv "$HYPR_DIR/bindings.lua.tmp" "$HYPR_DIR/bindings.lua"
 fi
 
 if [[ -f $HYPR_DIR/autostart.lua ]]; then

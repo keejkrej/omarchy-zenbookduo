@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Zenbook Duo: rotate both panels with the device, and turn the top panel
+# around for the person opposite when the laptop lies opened flat on a table
+# (opened flat but tilted up, on the kickstand or in hand, or stood on its
+# side for dual portrait, is not sharing).
+#
+# Follows iio-sensor-proxy's accelerometer orientation (normal, bottom-up,
+# left-up, right-up) and tilt, and the hinge sensor's opening angle, writes the
+# resulting layout (one of those, or "sharing") to
+# ~/.local/state/zenbook/rotation and reloads Hyprland;
+# hypr.duo (apply_monitors) turns that into per-panel transforms and a
+# stacked or side-by-side layout. Workspace 1 is on the top panel and 2 on the
+# bottom one (monitors.lua binds it there), except in portrait, where 1 is
+# always on the left panel (see set_swap).
+#
+# Needs: iio-sensor-proxy. UX8406MA sensors work with the stock firmware; its
+# hinge sensor reads 0, so sharing mode never starts there.
+# Run by zenbook-duo-rotate-watch.service.
+#
+# Touch ~/.local/state/zenbook/rotation-lock to hold the current layout.
+
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/zenbook-duo-rotate-watch.lock"
+flock -n 9 || exit 0
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zenbook"
+STATE="$STATE_DIR/rotation"
+LOCK="$STATE_DIR/rotation-lock"
+SETTLE=1.0      # an orientation reading must hold this long (seconds)
+SHARE_ON=170    # hinge angle (degrees) at which sharing mode can start...
+SHARE_OFF=160   # ...and below which it ends; the gap stops flicker at the edge
+POLL=0.5        # hinge poll interval (seconds)
+mkdir -p "$STATE_DIR"
+
+hinge_raw() {
+  local d
+  for d in /sys/bus/iio/devices/iio:device*; do
+    if [[ $(<"$d/name") == hinge ]]; then
+      echo "$d/in_angl0_raw" # channel 0 "hinge": opening angle in degrees
+      return
+    fi
+  done 2>/dev/null
+}
+HINGE=$(hinge_raw)
+
+# In portrait, workspace 1 belongs on the left screen. With the top panel on
+# the left (right-up) that is already so; with it on the right (left-up) the
+# bottom panel is on the left, so the two panels' workspaces are swapped for
+# as long as that lasts. The flag file records a swap in effect, so it is
+# always undone exactly once, even across a restart of this watcher.
+SWAPPED="$STATE_DIR/workspaces-swapped"
+
+set_swap() {
+  local want=$1 have=0
+  [[ -e $SWAPPED ]] && have=1
+  ((want == have)) && return
+  # Both panels must be on to swap (the bottom one is off while docked).
+  hyprctl -j monitors | jq -e 'map(.name) | index("eDP-1") and index("eDP-2")' >/dev/null || return
+  sleep 0.5 # let the reload settle the new layout first
+  hyprctl dispatch 'hl.dsp.workspace.swap_monitors({ monitor1 = "eDP-1", monitor2 = "eDP-2" })' >/dev/null 2>&1
+  if ((want)); then : >"$SWAPPED"; else rm -f "$SWAPPED"; fi
+}
+
+apply() {
+  local want=$1
+  [[ $want == "$applied" ]] && return
+  [[ -e $LOCK ]] && return
+  printf '%s\n' "$want" >"$STATE"
+  hyprctl reload >/dev/null 2>&1
+  applied=$want
+  if [[ $want == left-up ]]; then set_swap 1; else set_swap 0; fi
+}
+
+now_ms() { echo $((${EPOCHREALTIME/./} / 1000)); }
+
+while true; do
+  # 9>&- so the sensor monitor does not inherit the lock.
+  stdbuf -oL monitor-sensor --accel 2>/dev/null 9>&- | {
+    applied=$(cat "$STATE" 2>/dev/null || echo normal)
+    orientation=$applied
+    [[ $orientation == sharing ]] && orientation=normal
+    sharing=0
+    pending="" pending_since=0
+    tilt=""
+    while true; do
+      if read -r -t "$POLL" line; then
+        case $line in
+          *"orientation changed:"*) pending=${line##*: } ;;
+          *"(orientation: "*)
+            pending=${line#*orientation: }; pending=${pending%%,*}
+            tilt=${line##*tilt: }; tilt=${tilt%)}
+            ;;
+          *"Tilt changed:"*) tilt=${line##*: }; continue ;; # used on the next poll
+          *) continue ;;
+        esac
+        case $pending in normal | bottom-up | left-up | right-up) pending_since=$(now_ms) ;; *) pending="" ;; esac
+      elif (($? <= 128)); then
+        break # monitor-sensor exited; restart it
+      fi
+
+      # An orientation counts once it has held for SETTLE seconds.
+      if [[ -n $pending ]] && (($(now_ms) - pending_since >= ${SETTLE%.*} * 1000)); then
+        orientation=$pending
+        pending=""
+      fi
+
+      # Sharing needs the hinge open flat AND the laptop lying flat, which the
+      # accelerometer reports as face-up or face-down. Stood on its side for
+      # dual portrait (vertical / tilted) or tilted on the kickstand, it is not.
+      if [[ -n $HINGE ]] && angle=$(<"$HINGE"); then
+        lying=0
+        [[ $tilt == face-up || $tilt == face-down ]] && lying=1
+        if ((sharing == 0 && angle >= SHARE_ON && lying)); then
+          sharing=1
+        elif ((sharing == 1 && (angle <= SHARE_OFF || !lying))); then
+          sharing=0
+        fi
+      fi 2>/dev/null
+
+      if ((sharing)); then apply sharing; else apply "$orientation"; fi
+    done
+  }
+  sleep 5
+done
